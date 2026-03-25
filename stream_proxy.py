@@ -195,16 +195,6 @@ class StreamProxy:
         workers = self._workers
         cam_configs = self._cam_configs
 
-        @app.route("/")
-        def index():
-            cameras = [
-                (cam_id, cfg.get("name", cam_id))
-                for cam_id, cfg in cam_configs.items()
-            ]
-            return render_template_string(
-                _INDEX_HTML, cameras=cameras, count=len(cameras)
-            )
-
         @app.route("/stream/<cam_id>")
         def stream(cam_id):
             worker = workers.get(cam_id)
