@@ -216,3 +216,17 @@
 2026-03-24 23:01:15,407  INFO  Debug stream:      http://192.168.1.17:5000
 2026-03-24 23:01:15,408  INFO  Detections gallery: http://192.168.1.17:5000/detections
 2026-03-24 23:01:15,408  INFO  Press Ctrl+C to stop.
+2026-03-24 23:08:18,133  INFO  Loading YOLO model: yolov8n.pt on GPU device cpu
+2026-03-24 23:08:18,136  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-24 23:08:18,139  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-24 23:08:18,139  INFO  [33mPress CTRL+C to quit[0m
+2026-03-24 23:08:18,258  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, cat, dog, horse, motorcycle, person, truck
+2026-03-24 23:08:18,259  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-24 23:08:18,260  INFO  Waiting for camera...
+2026-03-24 23:08:21,032  INFO  Stream opened — 640x360
+2026-03-24 23:08:21,264  INFO  Debug stream:      http://192.168.1.17:5000
+2026-03-24 23:08:21,265  INFO  Detections gallery: http://192.168.1.17:5000/detections
+2026-03-24 23:08:21,265  INFO  Press Ctrl+C to stop.

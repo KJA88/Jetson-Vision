@@ -31,6 +31,13 @@ FLASK_PORT  = 8080
 
 app = Flask(__name__)
 
+@app.after_request
+def no_cache(r):
+    r.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    r.headers["Pragma"] = "no-cache"
+    r.headers["Expires"] = "0"
+    return r
+
 _cfg_lock = threading.Lock()
 
 
