@@ -1,0 +1,85 @@
+{
+  "mqtt": {
+    "broker": "192.168.1.18",
+    "port": 1883
+  },
+  "cooldown_sec": 60,
+  "stream_port": 8082,
+  "cameras": {
+    "frontyard": {
+      "name": "Front Yard",
+      "host": "192.168.1.82",
+      "rtsp_url": "rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102",
+      "stream_port": 5000,
+      "type": "fixed",
+      "base_fps": 3,
+      "triggered_fps": 10,
+      "watch_classes": [
+        "person",
+        "car",
+        "truck",
+        "motorcycle",
+        "bicycle",
+        "bus",
+        "dog",
+        "cat",
+        "bird",
+        "horse",
+        "bear"
+      ],
+      "confidence": 0.25,
+      "snapshots": true,
+      "mqtt_enabled": true,
+      "monitor_only": false,
+      "tracking": false,
+      "snapshot_dir": "detections/frontyard"
+    },
+    "backyard": {
+      "name": "Back Yard PTZ",
+      "host": "192.168.1.83",
+      "onvif_port": 80,
+      "ptz_user": "admin",
+      "ptz_pass": "123456",
+      "rtsp_url": "rtsp://admin:123456@192.168.1.83:554/stream1",
+      "stream_port": 5001,
+      "type": "ptz",
+      "base_fps": 3,
+      "triggered_fps": 10,
+      "watch_classes": [
+        "person",
+        "dog",
+        "cat",
+        "bird",
+        "horse",
+        "bear"
+      ],
+      "confidence": 0.7,
+      "snapshots": true,
+      "mqtt_enabled": true,
+      "monitor_only": false,
+      "tracking": true,
+      "snapshot_dir": "detections/backyard"
+    },
+    "indoor": {
+      "name": "Indoor PTZ",
+      "host": "192.168.1.116",
+      "onvif_port": 80,
+      "ptz_user": "admin",
+      "ptz_pass": "123456",
+      "rtsp_url": "rtsp://admin:123456@192.168.1.116:554/stream1",
+      "stream_port": 5002,
+      "type": "ptz",
+      "base_fps": 2,
+      "triggered_fps": 7,
+      "watch_classes": [
+        "person"
+      ],
+      "confidence": 0.5,
+      "snapshots": false,
+      "mqtt_enabled": false,
+      "monitor_only": false,
+      "tracking": true,
+      "snapshot_dir": "detections/indoor"
+    }
+  }
+}

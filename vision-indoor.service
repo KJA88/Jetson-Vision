@@ -1,0 +1,20 @@
+[Unit]
+Description=Vision Indoor PTZ Camera (port 5002)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=KA_JET
+WorkingDirectory=/home/KA_JET/robotics/jetson-vision
+ExecStart=/home/KA_JET/jetson_yolo_gpu/bin/python3 /home/KA_JET/robotics/jetson-vision/Indoor_tracker_v2.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vision-indoor
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target

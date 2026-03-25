@@ -1,0 +1,18 @@
+[Unit]
+Description=Vision Hub Dashboard (port 8080)
+After=network.target
+
+[Service]
+Type=simple
+User=KA_JET
+WorkingDirectory=/home/KA_JET/robotics/jetson-vision
+ExecStart=/home/KA_JET/jetson_yolo_gpu/bin/python3 /home/KA_JET/robotics/jetson-vision/dashboard.py
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=vision-dashboard
+
+[Install]
+WantedBy=multi-user.target

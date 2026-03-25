@@ -1,0 +1,140 @@
+2026-03-18 12:13:04,657  INFO  Loading YOLO model: yolov8s.pt on GPU device 0
+2026-03-18 12:13:04,660  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-18 12:13:04,663  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-18 12:13:04,664  INFO  [33mPress CTRL+C to quit[0m
+2026-03-18 12:13:05,110  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, car, cat, dog, horse, motorcycle, person, truck
+2026-03-18 12:13:05,110  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-18 12:13:05,111  INFO  Waiting for camera...
+2026-03-18 12:13:07,256  INFO  127.0.0.1 - - [18/Mar/2026 12:13:07] "GET / HTTP/1.1" 200 -
+2026-03-18 12:13:08,216  INFO  Stream opened — 640x360
+2026-03-18 12:13:08,617  INFO  Debug stream: http://192.168.1.17:5000
+2026-03-18 12:13:08,617  INFO  Detection log: /home/KA_JET/robotics/jetson-vision/detections/detections.log
+2026-03-18 12:13:08,618  INFO  Press Ctrl+C to stop.
+2026-03-18 12:13:09,788  INFO  127.0.0.1 - - [18/Mar/2026 12:13:09] "GET /stream HTTP/1.1" 200 -
+2026-03-18 12:13:09,938  INFO  127.0.0.1 - - [18/Mar/2026 12:13:09] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-03-18 12:13:44,676  INFO  DETECTED  class=person        conf=29%  image=person_20260318_121344.jpg
+2026-03-18 12:13:44,677  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.286, "timestamp": "2026-03-18T12:13:44.677168", "image": "person_20260318_121344.jpg"}
+2026-03-18 12:13:46,706  INFO  DETECTED  class=person        conf=85%  image=person_20260318_121346.jpg
+2026-03-18 12:13:46,706  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.846, "timestamp": "2026-03-18T12:13:46.706507", "image": "person_20260318_121346.jpg"}
+2026-03-18 12:17:56,571  INFO  Stopped by user.
+2026-03-18 12:17:57,001  INFO  Shutdown complete.
+2026-03-19 00:27:10,167  INFO  Loading YOLO model: yolov8s.pt on GPU device 0
+2026-03-19 00:27:10,170  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-19 00:27:10,173  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-19 00:27:10,173  INFO  [33mPress CTRL+C to quit[0m
+2026-03-19 00:27:10,526  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, car, cat, dog, horse, motorcycle, person, truck
+2026-03-19 00:27:10,526  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-19 00:27:10,527  INFO  Waiting for camera...
+2026-03-19 00:27:13,465  INFO  Stream opened — 640x360
+2026-03-19 00:27:13,531  INFO  Debug stream: http://192.168.1.17:5000
+2026-03-19 00:27:13,532  INFO  Detection log: /home/KA_JET/robotics/jetson-vision/detections/detections.log
+2026-03-19 00:27:13,532  INFO  Press Ctrl+C to stop.
+2026-03-19 00:27:16,536  INFO  127.0.0.1 - - [19/Mar/2026 00:27:16] "GET / HTTP/1.1" 200 -
+2026-03-19 00:27:16,596  INFO  127.0.0.1 - - [19/Mar/2026 00:27:16] "GET /stream HTTP/1.1" 200 -
+2026-03-19 00:27:45,575  INFO  DETECTED  class=person        conf=35%  image=person_20260319_002745.jpg
+2026-03-19 00:27:45,576  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.352, "timestamp": "2026-03-19T00:27:45.575985", "image": "person_20260319_002745.jpg"}
+2026-03-19 00:27:47,595  INFO  DETECTED  class=person        conf=84%  image=person_20260319_002747.jpg
+2026-03-19 00:27:47,596  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.843, "timestamp": "2026-03-19T00:27:47.596279", "image": "person_20260319_002747.jpg"}
+2026-03-19 00:27:49,617  INFO  DETECTED  class=person        conf=82%  image=person_20260319_002749.jpg
+2026-03-19 00:27:49,617  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.821, "timestamp": "2026-03-19T00:27:49.617450", "image": "person_20260319_002749.jpg"}
+2026-03-19 00:27:49,725  INFO  DETECTED  class=bird          conf=34%  image=bird_20260319_002749.jpg
+2026-03-19 00:27:49,726  INFO  MQTT → outdoor/animal | {"class": "bird", "confidence": 0.336, "timestamp": "2026-03-19T00:27:49.725962", "image": "bird_20260319_002749.jpg"}
+2026-03-19 00:30:08,486  INFO  Stopped by user.
+2026-03-19 00:30:08,885  INFO  Shutdown complete.
+2026-03-19 00:40:19,590  INFO  Loading YOLO model: yolov8s.pt on GPU device 0
+2026-03-19 00:40:19,595  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-19 00:40:19,598  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-19 00:40:19,599  INFO  [33mPress CTRL+C to quit[0m
+2026-03-19 00:40:19,926  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, car, cat, dog, horse, motorcycle, person, truck
+2026-03-19 00:40:19,926  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-19 00:40:19,927  INFO  Waiting for camera...
+2026-03-19 00:40:21,669  INFO  127.0.0.1 - - [19/Mar/2026 00:40:21] "GET / HTTP/1.1" 200 -
+2026-03-19 00:40:23,087  INFO  Stream opened — 640x360
+2026-03-19 00:40:23,432  INFO  Debug stream: http://192.168.1.17:5000
+2026-03-19 00:40:23,433  INFO  Detection log: /home/KA_JET/robotics/jetson-vision/detections/detections.log
+2026-03-19 00:40:23,433  INFO  Press Ctrl+C to stop.
+2026-03-19 00:40:24,582  INFO  127.0.0.1 - - [19/Mar/2026 00:40:24] "GET /stream HTTP/1.1" 200 -
+2026-03-19 00:41:35,198  INFO  Stopped by user.
+2026-03-19 00:41:35,685  INFO  Shutdown complete.
+2026-03-19 00:41:45,786  INFO  Loading YOLO model: yolov8s.pt on GPU device 0
+2026-03-19 00:41:45,790  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-19 00:41:45,794  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-19 00:41:45,795  INFO  [33mPress CTRL+C to quit[0m
+2026-03-19 00:41:46,161  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, car, cat, dog, horse, motorcycle, person, truck
+2026-03-19 00:41:46,162  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-19 00:41:46,163  INFO  Waiting for camera...
+2026-03-19 00:41:47,721  INFO  127.0.0.1 - - [19/Mar/2026 00:41:47] "GET / HTTP/1.1" 200 -
+2026-03-19 00:41:49,058  INFO  Stream opened — 640x360
+2026-03-19 00:41:49,167  INFO  Debug stream: http://192.168.1.17:5000
+2026-03-19 00:41:49,168  INFO  Detection log: /home/KA_JET/robotics/jetson-vision/detections/detections.log
+2026-03-19 00:41:49,168  INFO  Press Ctrl+C to stop.
+2026-03-19 00:41:50,292  INFO  127.0.0.1 - - [19/Mar/2026 00:41:50] "GET /stream HTTP/1.1" 200 -
+2026-03-19 00:42:10,551  INFO  Stopped by user.
+2026-03-19 00:42:10,821  INFO  Shutdown complete.
+2026-03-19 01:03:43,004  INFO  Loading YOLO model: yolov8s.pt on GPU device 0
+2026-03-19 01:03:43,009  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-19 01:03:43,011  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-19 01:03:43,012  INFO  [33mPress CTRL+C to quit[0m
+2026-03-19 01:03:43,378  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, car, cat, dog, horse, motorcycle, person, truck
+2026-03-19 01:03:43,378  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-19 01:03:43,379  INFO  Waiting for camera...
+2026-03-19 01:03:45,493  INFO  127.0.0.1 - - [19/Mar/2026 01:03:45] "GET / HTTP/1.1" 200 -
+2026-03-19 01:03:46,343  INFO  Stream opened — 640x360
+2026-03-19 01:03:46,383  INFO  Debug stream: http://192.168.1.17:5000
+2026-03-19 01:03:46,383  INFO  Detection log: /home/KA_JET/robotics/jetson-vision/detections/detections.log
+2026-03-19 01:03:46,383  INFO  Press Ctrl+C to stop.
+2026-03-19 01:03:47,457  INFO  127.0.0.1 - - [19/Mar/2026 01:03:47] "GET /stream HTTP/1.1" 200 -
+2026-03-19 01:07:06,452  ERROR  192.168.1.53 - - [19/Mar/2026 01:07:06] code 400, message Bad request version ('\x95\x87\x1a\x90^½\x06qs±')
+2026-03-19 01:07:06,453  INFO  192.168.1.53 - - [19/Mar/2026 01:07:06] "[35m[1m\x16\x03\x01\x06à\x01\x00\x06Ü\x03\x03íhªE\x8e\x12:-\x06R\x05n±Û[$Ûç\x84ÃÅBÖ\x99Õ\x04\x85üc½\x12\x19 Û\x09Áñ\x83à»\x0e\x9cAåú§\x05ø}\x8dí<qU×[$çc§ä"Ç$÷\x00 ::\x13\x01\x13\x02\x13\x03À+À/À,À0Ì©Ì¨À\x13À\x14\x00\x9c\x00\x9d\x00/\x005\x01\x00\x06s::\x00\x00þ\x0d\x00ú\x00\x00\x01\x00\x01º\x00 \x95\x87\x1a\x90^½\x06qs±[0m" HTTPStatus.BAD_REQUEST -
+2026-03-19 01:07:06,466  ERROR  192.168.1.53 - - [19/Mar/2026 01:07:06] code 400, message Bad request version ('\x02h2\x08http/1.1ÿ\x01\x00\x01\x00\x003\x04ï\x04íJJ\x00\x01\x00\x11ì\x04À\x00GNCå*\x94ù\x96X5x[¥\x9dËW\x99äX+¹è¼Û\x90¹\x06\x83\x0e\x9aÐ;¼:S£÷cc\x86\x00\x16\\')
+2026-03-19 01:07:06,467  INFO  192.168.1.53 - - [19/Mar/2026 01:07:06] "[35m[1m\x16\x03\x01\x07\x00\x01\x00\x06ü\x03\x03"^fég<¸m5-\x9bYX©§.Ö\\¹7\x02|@Ç¯)\x08B~ò0X °àrÆ}Ããf=Å\x88\x8dÑ\x8b\x1aæ¦ãÃi@\x97/\x15ìtÍ`\x82]ü\x96\x00 \x1a\x1a\x13\x01\x13\x02\x13\x03À+À/À,À0Ì©Ì¨À\x13À\x14\x00\x9c\x00\x9d\x00/\x005\x01\x00\x06\x93ºº\x00\x00\x00\x1b\x00\x03\x02\x00\x02DÍ\x00\x05\x00\x03\x02h2\x00+\x00\x07\x06ZZ\x03\x04\x03\x03\x00\x0d\x00\x12\x00\x10\x04\x03\x08\x04\x04\x01\x05\x03\x08\x05\x05\x01\x08\x06\x06\x01\x00\x0b\x00\x02\x01\x00\x00\x12\x00\x00\x00\x05\x00\x05\x01\x00\x00\x00\x00\x00#\x00\x00\x00\x10\x00\x0e\x00\x0c\x02h2\x08http/1.1ÿ\x01\x00\x01\x00\x003\x04ï\x04íJJ\x00\x01\x00\x11ì\x04À\x00GNCå*\x94ù\x96X5x[¥\x9dËW\x99äX+¹è¼Û\x90¹\x06\x83\x0e\x9aÐ;¼:S£÷cc\x86\x00\x16\\[0m" HTTPStatus.BAD_REQUEST -
+2026-03-19 01:08:34,073  INFO  192.168.1.71 - - [19/Mar/2026 01:08:34] "[33mGET /detections HTTP/1.1[0m" 404 -
+2026-03-19 01:08:34,217  INFO  192.168.1.71 - - [19/Mar/2026 01:08:34] "[33mGET /favicon.ico HTTP/1.1[0m" 404 -
+2026-03-19 01:09:44,017  INFO  Stopped by user.
+2026-03-19 01:09:44,407  INFO  Shutdown complete.
+2026-03-19 01:10:00,698  INFO  Loading YOLO model: yolov8s.pt on GPU device 0
+2026-03-19 01:10:00,701  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-19 01:10:00,704  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-19 01:10:00,704  INFO  [33mPress CTRL+C to quit[0m
+2026-03-19 01:10:01,055  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, car, cat, dog, horse, motorcycle, person, truck
+2026-03-19 01:10:01,056  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-19 01:10:01,057  INFO  Waiting for camera...
+2026-03-19 01:10:03,145  INFO  127.0.0.1 - - [19/Mar/2026 01:10:03] "GET / HTTP/1.1" 200 -
+2026-03-19 01:10:04,022  INFO  Stream opened — 640x360
+2026-03-19 01:10:04,060  INFO  Debug stream: http://192.168.1.17:5000
+2026-03-19 01:10:04,061  INFO  Detection log: /home/KA_JET/robotics/jetson-vision/detections/detections.log
+2026-03-19 01:10:04,061  INFO  Press Ctrl+C to stop.
+2026-03-19 01:10:05,131  INFO  127.0.0.1 - - [19/Mar/2026 01:10:05] "GET /stream HTTP/1.1" 200 -
+2026-03-19 01:10:39,692  INFO  DETECTED  class=person        conf=46%  image=person_20260319_011039.jpg
+2026-03-19 01:10:39,693  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.457, "timestamp": "2026-03-19T01:10:39.693060", "image": "person_20260319_011039.jpg"}
+2026-03-19 01:10:40,574  INFO  DETECTED  class=dog           conf=32%  image=dog_20260319_011040.jpg
+2026-03-19 01:10:40,575  INFO  MQTT → outdoor/animal | {"class": "dog", "confidence": 0.317, "timestamp": "2026-03-19T01:10:40.574583", "image": "dog_20260319_011040.jpg"}
+2026-03-19 01:10:41,722  INFO  DETECTED  class=person        conf=77%  image=person_20260319_011041.jpg
+2026-03-19 01:10:41,723  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.774, "timestamp": "2026-03-19T01:10:41.723349", "image": "person_20260319_011041.jpg"}
+2026-03-19 01:12:28,284  INFO  192.168.1.71 - - [19/Mar/2026 01:12:28] "[33mGET /detections HTTP/1.1[0m" 404 -
+2026-03-19 01:14:10,008  INFO  DETECTED  class=person        conf=42%  image=person_20260319_011410.jpg
+2026-03-19 01:14:10,009  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.415, "timestamp": "2026-03-19T01:14:10.008707", "image": "person_20260319_011410.jpg"}
+2026-03-19 01:14:12,022  INFO  DETECTED  class=person        conf=85%  image=person_20260319_011412.jpg
+2026-03-19 01:14:12,023  INFO  MQTT → outdoor/person | {"class": "person", "confidence": 0.852, "timestamp": "2026-03-19T01:14:12.022951", "image": "person_20260319_011412.jpg"}
+2026-03-19 01:14:12,759  INFO  DETECTED  class=dog           conf=58%  image=dog_20260319_011412.jpg
+2026-03-19 01:14:12,760  INFO  MQTT → outdoor/animal | {"class": "dog", "confidence": 0.578, "timestamp": "2026-03-19T01:14:12.759455", "image": "dog_20260319_011412.jpg"}
+2026-03-19 01:16:54,338  INFO  Stopped by user.
+2026-03-19 01:16:54,952  INFO  Shutdown complete.
