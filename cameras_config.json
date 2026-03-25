@@ -56,7 +56,7 @@
       "snapshots": true,
       "mqtt_enabled": true,
       "monitor_only": false,
-      "tracking": true,
+      "tracking": false,
       "snapshot_dir": "detections/backyard"
     },
     "indoor": {
