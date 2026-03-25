@@ -1,0 +1,7 @@
+detections/**/*.jpg
+detections/**/*.png
+detections/events.jsonl
+logs/
+__pycache__/
+*.pyc
+*.pt
