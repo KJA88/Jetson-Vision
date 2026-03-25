@@ -775,14 +775,14 @@ function bindPtzButtons() {
 
 function startPtz(dir) {
   if (!ptzApiBase) return;
-  fetch(ptzApiBase + '/ptz', {
+  fetch(ptzApiBase, {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({dir, action: 'start'})
   }).catch(()=>{});
 }
 function stopPtz(dir) {
   if (!ptzApiBase || dir === 'stop') return;
-  fetch(ptzApiBase + '/ptz', {
+  fetch(ptzApiBase, {
     method: 'POST', headers: {'Content-Type':'application/json'},
     body: JSON.stringify({dir, action: 'stop'})
   }).catch(()=>{});

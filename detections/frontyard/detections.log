@@ -186,3 +186,33 @@
 2026-03-24 22:12:34,272  INFO  Debug stream:      http://192.168.1.17:5000
 2026-03-24 22:12:34,273  INFO  Detections gallery: http://192.168.1.17:5000/detections
 2026-03-24 22:12:34,273  INFO  Press Ctrl+C to stop.
+2026-03-24 22:42:53,402  INFO  Loading YOLO model: yolov8n.pt on GPU device cpu
+2026-03-24 22:42:53,410  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-24 22:42:53,410  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-24 22:42:53,411  INFO  [33mPress CTRL+C to quit[0m
+2026-03-24 22:42:53,539  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, car, cat, dog, horse, motorcycle, person, truck
+2026-03-24 22:42:53,539  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-24 22:42:53,540  INFO  Waiting for camera...
+2026-03-24 22:42:56,184  INFO  Stream opened — 640x360
+2026-03-24 22:42:56,545  INFO  Debug stream:      http://192.168.1.17:5000
+2026-03-24 22:42:56,546  INFO  Detections gallery: http://192.168.1.17:5000/detections
+2026-03-24 22:42:56,546  INFO  Press Ctrl+C to stop.
+2026-03-24 22:57:27,069  INFO  DETECTED  class=bird          conf=35%  image=bird_20260324_225727.jpg
+2026-03-24 22:57:27,070  INFO  MQTT → outdoor/animal | {"class": "bird", "confidence": 0.347, "timestamp": "2026-03-24T22:57:27.070343", "image": "bird_20260324_225727.jpg"}
+2026-03-24 23:01:12,259  INFO  Loading YOLO model: yolov8n.pt on GPU device cpu
+2026-03-24 23:01:12,262  INFO  MQTT connected to broker at 192.168.1.18
+2026-03-24 23:01:12,278  INFO  [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.1.17:5000
+2026-03-24 23:01:12,279  INFO  [33mPress CTRL+C to quit[0m
+2026-03-24 23:01:12,399  INFO  Model loaded on GPU. Watching: bear, bicycle, bird, bus, cat, dog, horse, motorcycle, person, truck
+2026-03-24 23:01:12,400  INFO  Opening RTSP stream: rtsp://admin:Mastercam101@192.168.1.82:554/Streaming/Channels/102
+2026-03-24 23:01:12,400  INFO  Waiting for camera...
+2026-03-24 23:01:15,122  INFO  Stream opened — 640x360
+2026-03-24 23:01:15,407  INFO  Debug stream:      http://192.168.1.17:5000
+2026-03-24 23:01:15,408  INFO  Detections gallery: http://192.168.1.17:5000/detections
+2026-03-24 23:01:15,408  INFO  Press Ctrl+C to stop.

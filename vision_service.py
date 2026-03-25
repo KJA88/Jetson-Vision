@@ -315,6 +315,7 @@ class VisionService:
         self._input_scale = 1.0  # dynamic resolution scale
         self._running = False
         self._write_queue: queue.Queue = queue.Queue()
+        self._config_mtime: float = 0.0  # mtime of last loaded cameras_config.json
 
         # FPS tracking per camera for status logging
         self._fps_counter: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
@@ -363,15 +364,19 @@ class VisionService:
         # Background writer thread — snapshot saves and JSONL writes happen here,
         # never on the inference loop. Daemon=False so it flushes on clean shutdown.
         self._running = True
+        self._config_mtime = CONFIG_PATH.stat().st_mtime  # baseline — don't reload on first poll
         threading.Thread(
             target=self._writer_loop, name="writer", daemon=False
         ).start()
         threading.Thread(
             target=self._heartbeat_loop, name="heartbeat", daemon=True
         ).start()
+        threading.Thread(
+            target=self._config_reload_loop, name="config-reload", daemon=True
+        ).start()
 
         # MJPEG stream server — reads annotated frames from workers
-        stream_port = self._config.get("stream_port", 8080)
+        stream_port = 8082
         StreamProxy(self._workers, self._cam_configs, port=stream_port).start_in_thread()
 
         # Run inference loop — blocks until stop()
@@ -413,6 +418,10 @@ class VisionService:
             worker.resume()
         elif action == "set_triggered":
             self._scheduler.set_triggered(cam_id, payload.get("triggered", True))
+        elif action == "reload_config":
+            # Dashboard POSTed new config to /api/config/{cam_id} and saved the file;
+            # apply it immediately rather than waiting for the 10s poll cycle.
+            self._reload_config()
         else:
             logger.debug(f"[{cam_id}] Unhandled command action: {action}")
 
@@ -442,6 +451,71 @@ class VisionService:
                 },
             )
             time.sleep(self.HEARTBEAT_INTERVAL_SEC)
+
+    # ------------------------------------------------------------------
+    # Config hot-reload
+    # ------------------------------------------------------------------
+
+    # Fields the dashboard is allowed to change without restarting.
+    # Structural fields (rtsp_url, host, type, base_fps, …) require restart.
+    _RELOADABLE_FIELDS = {"watch_classes", "confidence", "snapshots", "monitor_only", "tracking"}
+
+    def _config_reload_loop(self):
+        """Poll cameras_config.json every 10 s. Reload when mtime changes."""
+        while self._running:
+            time.sleep(10)
+            try:
+                mtime = CONFIG_PATH.stat().st_mtime
+                if mtime != self._config_mtime:
+                    self._config_mtime = mtime
+                    self._reload_config()
+            except Exception as exc:
+                logger.error(f"Config reload poll error: {exc}")
+
+    def _reload_config(self):
+        """
+        Read cameras_config.json and apply hot-reloadable fields to every
+        running camera. Each camera's config dict is replaced atomically so
+        the inference loop always sees a consistent snapshot — it snapshots
+        cam_cfg = self._cam_configs[cam_id] at the top of each camera's
+        processing block, so the new config takes effect on the next cycle.
+        """
+        try:
+            with open(CONFIG_PATH) as f:
+                new_config = json.load(f)
+        except Exception as exc:
+            logger.error(f"Config reload: failed to parse {CONFIG_PATH}: {exc}")
+            return
+
+        new_cameras = new_config.get("cameras", {})
+        any_change = False
+
+        for cam_id, new_cfg in new_cameras.items():
+            if cam_id not in self._cam_configs:
+                logger.debug(f"[{cam_id}] New camera in config — restart required to add worker")
+                continue
+
+            old_cfg = self._cam_configs[cam_id]
+            changes = {
+                field: (old_cfg.get(field), new_cfg[field])
+                for field in self._RELOADABLE_FIELDS
+                if field in new_cfg and new_cfg[field] != old_cfg.get(field)
+            }
+
+            if not changes:
+                continue
+
+            # Build a fully merged dict and replace the reference atomically.
+            # The inference loop holds a local reference to the old dict for the
+            # current camera's cycle; the new dict is picked up next cycle.
+            self._cam_configs[cam_id] = {**old_cfg, **{f: new_cfg[f] for f in self._RELOADABLE_FIELDS if f in new_cfg}}
+            any_change = True
+
+            for field, (old_val, new_val) in changes.items():
+                logger.info(f"[{cam_id}] config reload: {field} {old_val!r} → {new_val!r}")
+
+        if any_change:
+            logger.info("Config hot-reload complete")
 
     # ------------------------------------------------------------------
     # Background writer — snapshot saves and JSONL appends

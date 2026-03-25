@@ -16,11 +16,10 @@
       "triggered_fps": 10,
       "watch_classes": [
         "person",
-        "car",
         "truck",
+        "bus",
         "motorcycle",
         "bicycle",
-        "bus",
         "dog",
         "cat",
         "bird",

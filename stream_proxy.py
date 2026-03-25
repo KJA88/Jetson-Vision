@@ -23,6 +23,7 @@ import time
 import cv2
 import numpy as np
 from flask import Flask, Response, jsonify, render_template_string, request as flask_request
+from flask_cors import CORS
 from onvif import ONVIFCamera
 
 logger = logging.getLogger("stream_proxy")
@@ -169,6 +170,7 @@ class StreamProxy:
         logging.getLogger("flask.app").setLevel(logging.WARNING)
 
         self._app = Flask(__name__)
+        CORS(self._app)  # Access-Control-Allow-Origin: * on all routes + OPTIONS preflight
         self._register_routes()
 
     def start_in_thread(self):
