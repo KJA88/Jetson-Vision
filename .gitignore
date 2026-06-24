@@ -5,3 +5,28 @@ logs/
 __pycache__/
 *.pyc
 *.pt
+
+# =========================
+# DHRAS private/runtime files
+# =========================
+cameras_config.json
+cameras_config.local.json
+*.local.json
+*.secrets.json
+.env
+.env.*
+detections/
+logs/
+__pycache__/
+*.pyc
+*.jsonl
+*.log
+*.pt
+
+# Legacy camera scripts with hardcoded camera credentials
+FY_MON.py
+Frontyard_Logging.py
+BY_MON_TRK.py
+Backyard_Logging.py
+ID_MON_TRK.py
+Indoor_tracker_v2.py
