@@ -30,3 +30,10 @@ BY_MON_TRK.py
 Backyard_Logging.py
 ID_MON_TRK.py
 Indoor_tracker_v2.py
+
+cameras_config.json
+detections/
+__pycache__/
+*.pyc
+*.log
+*.jsonl

@@ -705,7 +705,7 @@ function buildGrid() {
   const grid = document.getElementById('camera-grid');
   grid.innerHTML = '';
   for (const [id, cam] of Object.entries(config.cameras)) {
-    const streamUrl = `http://192.168.1.17:8082/stream/${id}`;
+    const streamUrl = `http://192.168.1.17:8081/stream/${id}`;
     const card = document.createElement('div');
     card.className = 'cam-card';
     card.dataset.camId = id;
@@ -758,11 +758,11 @@ async function pollStatus() {
 function openFullView(camId) {
   const cam = config.cameras[camId];
   document.getElementById('modal-view-title').textContent = cam.name;
-  document.getElementById('modal-view-stream').src = `http://192.168.1.17:8082/stream/${camId}`;
+  document.getElementById('modal-view-stream').src = `http://192.168.1.17:8081/stream/${camId}`;
 
   const ptzDiv = document.getElementById('ptz-controls');
   if (cam.type === 'ptz') {
-    ptzApiBase = `http://192.168.1.17:8082/ptz/${camId}`;
+    ptzApiBase = `http://192.168.1.17:8080/ptz/${camId}`;
     ptzDiv.style.display = 'flex';
     bindPtzButtons();
   } else {
@@ -775,23 +775,28 @@ function openFullView(camId) {
 function bindPtzButtons() {
   document.querySelectorAll('#ptz-controls .ptz-btn').forEach(btn => {
     btn.onmousedown  = btn.ontouchstart = (e) => { e.preventDefault(); startPtz(btn.dataset.dir); btn.classList.add('held'); };
-    btn.onmouseup    = btn.ontouchend   = (e) => { e.preventDefault(); stopPtz(btn.dataset.dir); btn.classList.remove('held'); };
-    btn.onmouseleave = () => { stopPtz(btn.dataset.dir); btn.classList.remove('held'); };
+    btn.onmouseup    = btn.ontouchend   = (e) => { e.preventDefault(); stopPtzHold(); stopPtz(btn.dataset.dir); btn.classList.remove('held'); };
+    btn.onmouseleave = () => { stopPtzHold(); stopPtz(btn.dataset.dir); btn.classList.remove('held'); };
   });
 }
 
 function startPtz(dir) {
   if (!ptzApiBase) return;
-  fetch(ptzApiBase, {
-    method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({dir, action: 'start'})
-  }).catch(()=>{});
+  function sendMove() {
+    fetch(ptzApiBase, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({dir, action: 'start'})
+    }).catch(()=>{});
+  }
+  sendMove();
+  clearInterval(ptzHoldInterval);
+  ptzHoldInterval = setInterval(sendMove, 300);
 }
 function stopPtz(dir) {
-  if (!ptzApiBase || dir === 'stop') return;
+  if (!ptzApiBase) return;
   fetch(ptzApiBase, {
     method: 'POST', headers: {'Content-Type':'application/json'},
-    body: JSON.stringify({dir, action: 'stop'})
+    body: JSON.stringify({dir: 'stop', action: 'stop'})
   }).catch(()=>{});
 }
 function stopPtzHold() {
@@ -951,6 +956,53 @@ init();
 # ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
+
+from onvif import ONVIFCamera
+import threading as _ptz_threading
+_ptz_cache = {}
+_ptz_cache_lock = _ptz_threading.Lock()
+
+def _get_ptz_svc(cam_id):
+    with _ptz_cache_lock:
+        if cam_id not in _ptz_cache:
+            cfg = load_config()["cameras"][cam_id]
+            cam = ONVIFCamera(cfg["host"], cfg.get("onvif_port", 80),
+                              cfg.get("ptz_user", "admin"), cfg.get("ptz_pass", ""))
+            ptz = cam.create_ptz_service()
+            token = cam.create_media_service().GetProfiles()[0].token
+            _ptz_cache[cam_id] = (ptz, token)
+        return _ptz_cache[cam_id]
+
+@app.route("/ptz/<cam_id>", methods=["POST"])
+def ptz_route(cam_id):
+    body = request.get_json(silent=True) or {}
+    direction = str(body.get("dir", "")).lower()
+    try:
+        ptz_svc, token = _get_ptz_svc(cam_id)
+        if direction == "stop":
+            req = ptz_svc.create_type("Stop")
+            req.ProfileToken = token
+            req.PanTilt = True
+            req.Zoom = True
+            ptz_svc.Stop(req)
+            _ptz_cache.pop(cam_id, None)
+        else:
+            s = 0.8
+            vx = vy = vz = 0.0
+            if direction == "left":    vx = -s
+            elif direction == "right": vx = +s
+            elif direction == "up":    vy = +s
+            elif direction == "down":  vy = -s
+            elif direction == "zoomin":  vz = +s
+            elif direction == "zoomout": vz = -s
+            req = ptz_svc.create_type("ContinuousMove")
+            req.ProfileToken = token
+            req.Velocity = {"PanTilt": {"x": vx, "y": vy}, "Zoom": {"x": vz}}
+            ptz_svc.ContinuousMove(req)
+        return jsonify({"cam_id": cam_id, "dir": direction, "ok": True, "msg": "ok"})
+    except Exception as e:
+        _ptz_cache.pop(cam_id, None)
+        return jsonify({"ok": False, "msg": str(e)}), 502
 
 if __name__ == "__main__":
     DETECT_DIR.mkdir(exist_ok=True)

@@ -1,807 +1,729 @@
 """
-vision_service.py — DHRAS Shared Vision Service (Session 1A)
+vision_service.py
+Jetson Orin Nano | ~/robotics/jetson-vision/
 
-Runs on Jetson Orin Nano (192.168.1.17).
+Single vision service: one YOLOv8n on GPU, all three cameras.
+- One CameraWorker per camera (RTSP capture thread)
+- Central inference loop processes frames from all cameras sequentially
+- PTZ auto-tracking for backyard + indoor (reads tracking/monitor_only from config)
+- MJPEG streams served directly on port 8081 at /stream/<cam_id>
+- Config hot-reloads from cameras_config.json every 30 frames
 
-Responsibilities:
-  - Load YOLOv8n once on GPU at startup
-  - Create one CameraWorker per camera (RTSP reader threads)
-  - Central inference loop: round-robin cameras by priority, 120ms cycle budget
-  - Detection persistence: confirm class in 2/3 frames, enforce cooldown
-  - Publish detections to MQTT (dhras/cameras/{cam_id}/detection)
-  - Save snapshots and append to events.jsonl
-  - Publish heartbeat to dhras/health/jetson every 5 seconds
+Usage:
+    source ~/jetson_yolo_gpu/bin/activate
+    python3 ~/robotics/jetson-vision/vision_service.py
 
-Session 1B adds: stream_proxy.py (reads annotated frames from workers),
-                 ptz_controller.py (subscribes to detections, drives ONVIF).
+Streams:
+    http://192.168.1.17:8081/stream/frontyard
+    http://192.168.1.17:8081/stream/backyard
+    http://192.168.1.17:8081/stream/indoor
 """
 
+import cv2
 import json
 import logging
 import os
-import queue
 import threading
 import time
-from collections import defaultdict, deque
 from datetime import datetime
-from pathlib import Path
+from typing import Optional
 
-import cv2
-import paho.mqtt.client as mqtt
+from flask import Flask, Response, jsonify
+from flask_cors import CORS
+from onvif import ONVIFCamera
 from ultralytics import YOLO
+import paho.mqtt.client as mqtt
 
-from camera_worker import CameraWorker
-from stream_proxy import StreamProxy
+# ─────────────────────────────────────────────
+# PATHS
+# ─────────────────────────────────────────────
 
-# ---------------------------------------------------------------------------
-# Paths
-# ---------------------------------------------------------------------------
-BASE_DIR = Path(__file__).parent.resolve()
-CONFIG_PATH = BASE_DIR / "cameras_config.json"
-DETECTIONS_DIR = BASE_DIR / "detections"
-EVENTS_LOG = DETECTIONS_DIR / "events.jsonl"
-LOGS_DIR = BASE_DIR / "logs"
+BASE_DIR    = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(BASE_DIR, "cameras_config.json")
+EVENTS_FILE = os.path.expanduser("~/robotics/jetson-vision/detections/events.jsonl")
+YOLO_MODEL  = os.path.join(BASE_DIR, "yolov8n.pt")
 
-# ---------------------------------------------------------------------------
-# Logging — console + file
-# ---------------------------------------------------------------------------
-LOGS_DIR.mkdir(exist_ok=True)
-DETECTIONS_DIR.mkdir(exist_ok=True)
+# ─────────────────────────────────────────────
+# GLOBAL CONFIG
+# ─────────────────────────────────────────────
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(name)s  %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOGS_DIR / "vision_service.log"),
-    ],
-)
-logger = logging.getLogger("vision_service")
+_config_lock = threading.Lock()
+_config: dict = {}
 
 
-# ---------------------------------------------------------------------------
-# Config loader
-# ---------------------------------------------------------------------------
-def load_config() -> dict:
-    with open(CONFIG_PATH) as f:
+def _load_full_config() -> dict:
+    with open(CONFIG_FILE) as f:
         return json.load(f)
 
 
-# ---------------------------------------------------------------------------
-# MQTT client wrapper
-# Handles reconnection automatically (paho loop_start).
-# Supports exact topic and wildcard subscriptions.
-# ---------------------------------------------------------------------------
-class MQTTClient:
-    def __init__(self, broker_host: str, broker_port: int = 1883):
-        self._broker_host = broker_host
-        self._broker_port = broker_port
-        self._client = mqtt.Client(client_id="dhras-vision")
-        self._client.on_connect = self._on_connect
-        self._client.on_disconnect = self._on_disconnect
-        self._client.on_message = self._on_message
-        self._subscriptions: dict[str, callable] = {}
-        self._lock = threading.Lock()
-        self.connected = False
-
-    def connect(self):
-        self._client.connect_async(self._broker_host, self._broker_port, keepalive=60)
-        self._client.loop_start()
-
-    def subscribe(self, topic: str, callback: callable):
-        with self._lock:
-            self._subscriptions[topic] = callback
-        self._client.subscribe(topic)
-
-    def publish(self, topic: str, payload, retain: bool = False):
-        if isinstance(payload, dict):
-            payload = json.dumps(payload)
-        self._client.publish(topic, payload, retain=retain)
-
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            logger.info(f"MQTT connected to {self._broker_host}:{self._broker_port}")
-            self.connected = True
-            # Re-subscribe after reconnect
-            with self._lock:
-                for topic in self._subscriptions:
-                    client.subscribe(topic)
-        else:
-            logger.warning(f"MQTT connect failed: rc={rc}")
-
-    def _on_disconnect(self, client, userdata, rc):
-        self.connected = False
-        logger.warning(f"MQTT disconnected (rc={rc}) — paho will auto-reconnect")
-
-    def _on_message(self, client, userdata, msg):
-        topic = msg.topic
-        callback = None
-        with self._lock:
-            # Exact match first, then wildcard scan
-            if topic in self._subscriptions:
-                callback = self._subscriptions[topic]
-            else:
-                for sub_topic, sub_cb in self._subscriptions.items():
-                    if mqtt.topic_matches_sub(sub_topic, topic):
-                        callback = sub_cb
-                        break
-        if callback:
-            try:
-                payload = json.loads(msg.payload.decode())
-                callback(topic, payload)
-            except Exception as exc:
-                logger.error(f"Error handling MQTT message on {topic}: {exc}")
+def reload_config():
+    global _config
+    try:
+        data = _load_full_config()
+        with _config_lock:
+            _config = data
+    except Exception as e:
+        logging.warning("[config] reload failed: %s", e)
 
 
-# ---------------------------------------------------------------------------
-# Detection persistence tracker
-#
-# Tracks the last 3 inference results per (camera, class).
-# A class is "confirmed" when it appears in >= 2 of the last 3 frames.
-# Cooldown prevents re-publishing the same camera+class too frequently.
-# ---------------------------------------------------------------------------
-class DetectionTracker:
-    WINDOW = 3
-    MIN_HITS = 2
-
-    def __init__(self, cooldown_sec: float = 60.0):
-        self.cooldown_sec = cooldown_sec
-        # cam_id → class_name → deque[bool]
-        self._history: dict = defaultdict(lambda: defaultdict(lambda: deque(maxlen=self.WINDOW)))
-        # cam_id → class_name → timestamp of last publish
-        self._last_published: dict = defaultdict(lambda: defaultdict(float))
-
-    def update(self, cam_id: str, detected_classes: set) -> list:
-        """
-        Record inference result. Returns list of class names that are confirmed
-        and past cooldown — these should be published.
-
-        detected_classes: set of class names that appeared above confidence threshold.
-        """
-        # Record presence/absence for every class this camera has ever seen
-        all_tracked = set(self._history[cam_id].keys()) | detected_classes
-        for cls in all_tracked:
-            self._history[cam_id][cls].append(cls in detected_classes)
-
-        now = time.time()
-        to_publish = []
-        for cls in detected_classes:
-            hits = sum(self._history[cam_id][cls])
-            if hits >= self.MIN_HITS:
-                if now - self._last_published[cam_id][cls] >= self.cooldown_sec:
-                    to_publish.append(cls)
-                    self._last_published[cam_id][cls] = now
-
-        return to_publish
+def cam_cfg(cam_id: str, key: str, default=None):
+    with _config_lock:
+        return _config.get("cameras", {}).get(cam_id, {}).get(key, default)
 
 
-# ---------------------------------------------------------------------------
-# Priority scheduler
-#
-# Decides which cameras are due for inference this cycle.
-# Cameras are ranked by urgency = time_since_last_inference * target_fps.
-# Starvation protection: any camera idle >= 3 seconds is forced to the front.
-#
-# FPS targets per active trigger count (from architecture spec):
-#   0 triggered  → base_fps
-#   1 triggered  → triggered cam: triggered_fps,     others: 1.5 FPS
-#   2 triggered  → triggered cams: triggered_fps×0.65, others: 1.0 FPS
-#   3+ triggered → triggered cams: triggered_fps×0.40, others: 1.0 FPS
-# ---------------------------------------------------------------------------
-class PriorityScheduler:
-    STARVATION_LIMIT_SEC = 3.0
-    TRIGGER_TIMEOUT_SEC = 30.0   # seconds of no detection before trigger expires
+reload_config()
 
-    def __init__(self, camera_configs: dict):
-        self._configs = camera_configs
-        self._last_inferred: dict[str, float] = {cam_id: 0.0 for cam_id in camera_configs}
-        self._triggered: dict[str, bool] = {cam_id: False for cam_id in camera_configs}
-        self._trigger_expires: dict[str, float] = {cam_id: 0.0 for cam_id in camera_configs}
+# ─────────────────────────────────────────────
+# LOGGING
+# ─────────────────────────────────────────────
 
-    def set_triggered(self, cam_id: str, triggered: bool = True):
-        self._triggered[cam_id] = triggered
-        if triggered:
-            self._trigger_expires[cam_id] = time.time() + self.TRIGGER_TIMEOUT_SEC
-            logger.debug(f"[{cam_id}] Triggered — boosting inference priority")
+os.makedirs(os.path.expanduser("~/robotics/jetson-vision/logs"), exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)s  %(message)s",
+    handlers=[
+        logging.FileHandler(
+            os.path.expanduser("~/robotics/jetson-vision/logs/vision_service.log")
+        ),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger(__name__)
 
-    def mark_inferred(self, cam_id: str):
-        self._last_inferred[cam_id] = time.time()
-
-    def get_target_fps(self, cam_id: str) -> float:
-        self._expire_triggers()
-        triggered_count = sum(self._triggered.values())
-        cfg = self._configs[cam_id]
-        base = cfg.get("base_fps", 3)
-        trig = cfg.get("triggered_fps", 10)
-
-        if triggered_count == 0:
-            return base
-        elif triggered_count == 1:
-            return trig if self._triggered[cam_id] else 1.5
-        elif triggered_count == 2:
-            return trig * 0.65 if self._triggered[cam_id] else 1.0
-        else:  # 3+
-            return trig * 0.40 if self._triggered[cam_id] else 1.0
-
-    def reduce_resolution_needed(self) -> bool:
-        """True when 3+ cameras are triggered simultaneously."""
-        return sum(self._triggered.values()) >= 3
-
-    def get_ordered_cameras(self, active_cam_ids: list) -> list:
-        """
-        Return cameras that are due for inference, sorted by urgency.
-        Starvation-forced cameras come first regardless of urgency score.
-        Cameras not yet due for their next frame are excluded this cycle.
-        """
-        self._expire_triggers()
-        now = time.time()
-        forced = []
-        due = []
-
-        for cam_id in active_cam_ids:
-            elapsed = now - self._last_inferred[cam_id]
-
-            # Starvation protection: force-include if idle too long
-            if elapsed >= self.STARVATION_LIMIT_SEC:
-                forced.append(cam_id)
-                continue
-
-            target_fps = self.get_target_fps(cam_id)
-            if target_fps <= 0:
-                continue
-            target_interval = 1.0 / target_fps
-
-            if elapsed >= target_interval:
-                urgency = elapsed * target_fps  # larger = more overdue
-                due.append((urgency, cam_id))
-
-        due.sort(reverse=True)  # most overdue first
-        return forced + [cam_id for _, cam_id in due]
-
-    def _expire_triggers(self):
-        now = time.time()
-        for cam_id, active in list(self._triggered.items()):
-            if active and now >= self._trigger_expires[cam_id]:
-                self._triggered[cam_id] = False
-                logger.debug(f"[{cam_id}] Trigger expired — returning to base priority")
-
-
-# ---------------------------------------------------------------------------
-# Snapshot + event log helpers
-# ---------------------------------------------------------------------------
-def save_snapshot(frame, cam_id: str, class_name: str) -> str:
-    """Save annotated frame as JPEG. Returns absolute path."""
-    cam_dir = DETECTIONS_DIR / cam_id
-    cam_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    path = cam_dir / f"{class_name}_{timestamp}.jpg"
-    cv2.imwrite(str(path), frame)
-    return str(path)
-
+# ─────────────────────────────────────────────
+# EVENTS LOG
+# ─────────────────────────────────────────────
 
 _events_lock = threading.Lock()
 
-def append_event(event: dict):
-    """Append a detection event to the fast JSONL log. Thread-safe."""
+
+def log_event(cam_id: str, label: str, confidence: float, image_path: str = None):
+    event = {
+        "timestamp":  datetime.now().isoformat(timespec="seconds"),
+        "camera":     cam_id,
+        "class":      label,
+        "confidence": round(confidence, 3),
+        "image":      os.path.basename(image_path) if image_path else None,
+    }
     with _events_lock:
-        with open(EVENTS_LOG, "a") as f:
+        os.makedirs(os.path.dirname(EVENTS_FILE), exist_ok=True)
+        with open(EVENTS_FILE, "a") as f:
             f.write(json.dumps(event) + "\n")
 
 
-# ---------------------------------------------------------------------------
-# VisionService — main class
-# ---------------------------------------------------------------------------
-class VisionService:
-    HEARTBEAT_INTERVAL_SEC = 5.0
-    CYCLE_BUDGET_MS = 120.0          # max allowed inference+annotate+publish time
-    SCALE_STEP_DOWN = 0.10           # reduce resolution by this much when over budget
-    SCALE_STEP_UP = 0.05             # recover resolution gradually when under budget
-    SCALE_MIN = 0.50                 # never go below 50% of original resolution
-    SCALE_RECOVERY_THRESHOLD = 0.75  # recover when cycle < 75% of budget
+# ─────────────────────────────────────────────
+# MQTT
+# ─────────────────────────────────────────────
 
-    def __init__(self, config: dict):
-        self._config = config
-        mqtt_cfg = config.get("mqtt", {})
-        self._broker_host = mqtt_cfg.get("broker", "192.168.1.18")
-        self._broker_port = mqtt_cfg.get("port", 1883)
-        self._cooldown_sec = config.get("cooldown_sec", 60)
+MQTT_BROKER  = "192.168.1.18"
+MQTT_PORT    = 1883
+COOLDOWN_SEC = 3
 
-        self._cam_configs: dict = config["cameras"]
-        self._workers: dict[str, CameraWorker] = {}
-        self._model = None
-        self._mqtt = MQTTClient(self._broker_host, self._broker_port)
-        self._tracker = DetectionTracker(cooldown_sec=self._cooldown_sec)
-        self._scheduler: PriorityScheduler = None
-        self._input_scale = 1.0  # dynamic resolution scale
-        self._running = False
-        self._write_queue: queue.Queue = queue.Queue()
-        self._config_mtime: float = 0.0  # mtime of last loaded cameras_config.json
+TOPIC_MAP = {
+    "frontyard": {
+        "person":     "outdoor/person",
+        "car":        "outdoor/vehicle",
+        "truck":      "outdoor/vehicle",
+        "bus":        "outdoor/vehicle",
+        "motorcycle": "outdoor/vehicle",
+        "bicycle":    "outdoor/vehicle",
+        "dog":        "outdoor/animal",
+        "cat":        "outdoor/animal",
+        "bird":       "outdoor/animal",
+    },
+    "backyard": {
+        "person": "backyard/person",
+        "dog":    "backyard/animal",
+        "cat":    "backyard/animal",
+        "bird":   "backyard/animal",
+        "horse":  "backyard/animal",
+        "bear":   "backyard/animal",
+    },
+    "indoor": {
+        "person": "indoor/person",
+    },
+}
 
-        # FPS tracking per camera for status logging
-        self._fps_counter: dict[str, deque] = defaultdict(lambda: deque(maxlen=30))
 
-    def start(self):
-        logger.info("=" * 60)
-        logger.info("DHRAS Vision Service starting")
+def _build_mqtt():
+    try:
+        c = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    except AttributeError:
+        c = mqtt.Client()
+    c.on_connect = lambda cl, ud, flags, rc, *a: \
+        log.info("MQTT connected" if rc == 0 else "MQTT failed rc=%s" % rc)
+    return c
 
-        # Load model once on GPU — fail immediately with a clear message if missing
-        model_path = BASE_DIR / "yolov8n.pt"
-        if not model_path.exists():
-            raise FileNotFoundError(
-                f"YOLO model not found: {model_path}\n"
-                f"Download it with: wget https://github.com/ultralytics/assets/releases/download/v0.0.0/yolov8n.pt -O {model_path}"
-            )
-        logger.info(f"Loading YOLO model: {model_path}")
-        self._model = YOLO(str(model_path))
-        self._model.to("cuda")
-        # Warm up model to avoid first-frame latency spike
-        import numpy as np
-        self._model(np.zeros((640, 640, 3), dtype=np.uint8), verbose=False)
-        logger.info("YOLO model loaded and warmed up on GPU")
 
-        # Create camera workers
-        for cam_id, cam_cfg in self._cam_configs.items():
-            worker = CameraWorker(cam_id, cam_cfg)
-            self._workers[cam_id] = worker
-            (DETECTIONS_DIR / cam_id).mkdir(parents=True, exist_ok=True)
-            logger.info(f"[{cam_id}] Worker created — {cam_cfg.get('name', cam_id)}")
+_mqtt = _build_mqtt()
 
-        self._scheduler = PriorityScheduler(self._cam_configs)
 
-        # Connect MQTT
-        self._mqtt.connect()
-        time.sleep(1.0)  # allow connection to establish before subscribing
+def _mqtt_connect():
+    try:
+        _mqtt.connect(MQTT_BROKER, MQTT_PORT, keepalive=60)
+        _mqtt.loop_start()
+    except Exception as e:
+        log.warning("MQTT connect failed: %s", e)
 
-        # Subscribe to per-camera command topics
-        for cam_id in self._workers:
-            self._mqtt.subscribe(
-                f"dhras/cameras/{cam_id}/command",
-                self._handle_camera_command,
-            )
-        # Subscribe to radar priority-boost events (published by sensor_hub, Session 3)
-        self._mqtt.subscribe("dhras/sensors/radar/#", self._handle_radar_event)
 
-        # Background writer thread — snapshot saves and JSONL writes happen here,
-        # never on the inference loop. Daemon=False so it flushes on clean shutdown.
-        self._running = True
-        self._config_mtime = CONFIG_PATH.stat().st_mtime  # baseline — don't reload on first poll
-        threading.Thread(
-            target=self._writer_loop, name="writer", daemon=False
-        ).start()
-        threading.Thread(
-            target=self._heartbeat_loop, name="heartbeat", daemon=True
-        ).start()
-        threading.Thread(
-            target=self._config_reload_loop, name="config-reload", daemon=True
-        ).start()
+threading.Thread(target=_mqtt_connect, daemon=True).start()
 
-        # MJPEG stream server — reads annotated frames from workers
-        stream_port = 8082
-        StreamProxy(self._workers, self._cam_configs, port=stream_port).start_in_thread()
+# ─────────────────────────────────────────────
+# CAMERA WORKER  (RTSP capture thread)
+# ─────────────────────────────────────────────
 
-        # Run inference loop — blocks until stop()
-        logger.info("Entering inference loop")
-        try:
-            self._inference_loop()
-        except Exception as exc:
-            logger.exception(f"Inference loop crashed: {exc}")
-        finally:
-            self.stop()
+class CameraWorker:
+    def __init__(self, cam_id: str, rtsp_url: str):
+        self.cam_id   = cam_id
+        self.rtsp_url = rtsp_url
+        self._frame   = None
+        self._lock    = threading.Lock()
+        self._stop    = False
+        threading.Thread(target=self._reader, daemon=True,
+                         name="cap-%s" % cam_id).start()
+
+    def _reader(self):
+        while not self._stop:
+            cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+            if not cap.isOpened():
+                log.warning("[%s] RTSP open failed — retrying in 5s", self.cam_id)
+                time.sleep(5)
+                continue
+            log.info("[%s] RTSP opened", self.cam_id)
+            while not self._stop:
+                ret, frame = cap.read()
+                if ret:
+                    with self._lock:
+                        self._frame = frame
+                else:
+                    log.warning("[%s] frame read failed — reconnecting", self.cam_id)
+                    break
+            cap.release()
+            if not self._stop:
+                time.sleep(3)
+
+    def read(self):
+        with self._lock:
+            return None if self._frame is None else self._frame.copy()
 
     def stop(self):
-        self._running = False
-        for w in self._workers.values():
-            w.stop()
-        # Sentinel tells writer thread to drain and exit
-        self._write_queue.put(None)
-        self._write_queue.join()
-        logger.info("VisionService stopped")
+        self._stop = True
 
-    # ------------------------------------------------------------------
-    # MQTT command handlers
-    # ------------------------------------------------------------------
-    def _handle_camera_command(self, topic: str, payload: dict):
-        # topic: dhras/cameras/{cam_id}/command
-        parts = topic.split("/")
-        if len(parts) < 4:
-            return
-        cam_id = parts[2]
-        worker = self._workers.get(cam_id)
-        if not worker:
-            logger.warning(f"Command received for unknown camera: {cam_id}")
-            return
 
-        action = payload.get("action", "")
-        if action == "pause":
-            worker.pause()
-        elif action == "resume":
-            worker.resume()
-        elif action == "set_triggered":
-            self._scheduler.set_triggered(cam_id, payload.get("triggered", True))
-        elif action == "reload_config":
-            # Dashboard POSTed new config to /api/config/{cam_id} and saved the file;
-            # apply it immediately rather than waiting for the 10s poll cycle.
-            self._reload_config()
-        else:
-            logger.debug(f"[{cam_id}] Unhandled command action: {action}")
+# ─────────────────────────────────────────────
+# VEHICLE MOTION TRACKER  (frontyard only)
+# ─────────────────────────────────────────────
 
-    def _handle_radar_event(self, topic: str, payload: dict):
-        # Radar presence event from sensor_hub can carry a camera_id to boost.
-        # Full zone-to-camera mapping is implemented in Session 3 on Pi5.
-        cam_id = payload.get("camera_id")
-        if cam_id and cam_id in self._workers:
-            self._scheduler.set_triggered(cam_id, True)
-            logger.info(f"[{cam_id}] Priority boosted by radar event on {topic}")
+VEHICLE_CLASSES        = {"car", "truck", "bus", "motorcycle", "bicycle"}
+MOTION_THRESHOLD       = 25
+MOTION_FRAMES_REQUIRED = 3
+TRACK_STALE_FRAMES     = 60
 
-    # ------------------------------------------------------------------
-    # Heartbeat
-    # ------------------------------------------------------------------
-    def _heartbeat_loop(self):
-        while self._running:
-            active_count = sum(
-                1 for w in self._workers.values() if not w.paused and not w.is_stale
-            )
-            self._mqtt.publish(
-                "dhras/health/jetson",
-                {
-                    "timestamp": time.time(),
-                    "service": "vision_service",
-                    "active_cameras": active_count,
-                    "input_scale": round(self._input_scale, 2),
-                },
-            )
-            time.sleep(self.HEARTBEAT_INTERVAL_SEC)
 
-    # ------------------------------------------------------------------
-    # Config hot-reload
-    # ------------------------------------------------------------------
+def _iou(a, b):
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    ix1 = max(ax1, bx1); iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2); iy2 = min(ay2, by2)
+    if ix2 <= ix1 or iy2 <= iy1:
+        return 0.0
+    inter = (ix2 - ix1) * (iy2 - iy1)
+    union = (ax2-ax1)*(ay2-ay1) + (bx2-bx1)*(by2-by1) - inter
+    return inter / union if union > 0 else 0.0
 
-    # Fields the dashboard is allowed to change without restarting.
-    # Structural fields (rtsp_url, host, type, base_fps, …) require restart.
-    _RELOADABLE_FIELDS = {"watch_classes", "confidence", "snapshots", "monitor_only", "tracking"}
 
-    def _config_reload_loop(self):
-        """Poll cameras_config.json every 10 s. Reload when mtime changes."""
-        while self._running:
-            time.sleep(10)
-            try:
-                mtime = CONFIG_PATH.stat().st_mtime
-                if mtime != self._config_mtime:
-                    self._config_mtime = mtime
-                    self._reload_config()
-            except Exception as exc:
-                logger.error(f"Config reload poll error: {exc}")
+class VehicleTracker:
+    def __init__(self):
+        self._tracks  = {}
+        self._counter = 0
 
-    def _reload_config(self):
-        """
-        Read cameras_config.json and apply hot-reloadable fields to every
-        running camera. Each camera's config dict is replaced atomically so
-        the inference loop always sees a consistent snapshot — it snapshots
-        cam_cfg = self._cam_configs[cam_id] at the top of each camera's
-        processing block, so the new config takes effect on the next cycle.
-        """
-        try:
-            with open(CONFIG_PATH) as f:
-                new_config = json.load(f)
-        except Exception as exc:
-            logger.error(f"Config reload: failed to parse {CONFIG_PATH}: {exc}")
-            return
+    def is_moving(self, label: str, x1: int, y1: int, x2: int, y2: int) -> bool:
+        box = (x1, y1, x2, y2)
+        cx  = (x1 + x2) // 2
+        cy  = (y1 + y2) // 2
 
-        new_cameras = new_config.get("cameras", {})
-        any_change = False
-
-        for cam_id, new_cfg in new_cameras.items():
-            if cam_id not in self._cam_configs:
-                logger.debug(f"[{cam_id}] New camera in config — restart required to add worker")
+        best_id  = None
+        best_iou = 0.0
+        for tid, t in self._tracks.items():
+            if t["label"] != label:
                 continue
+            score = _iou(box, t["box"])
+            if score > best_iou:
+                best_iou = score
+                best_id  = tid
 
-            old_cfg = self._cam_configs[cam_id]
-            changes = {
-                field: (old_cfg.get(field), new_cfg[field])
-                for field in self._RELOADABLE_FIELDS
-                if field in new_cfg and new_cfg[field] != old_cfg.get(field)
-            }
-
-            if not changes:
-                continue
-
-            # Build a fully merged dict and replace the reference atomically.
-            # The inference loop holds a local reference to the old dict for the
-            # current camera's cycle; the new dict is picked up next cycle.
-            self._cam_configs[cam_id] = {**old_cfg, **{f: new_cfg[f] for f in self._RELOADABLE_FIELDS if f in new_cfg}}
-            any_change = True
-
-            for field, (old_val, new_val) in changes.items():
-                logger.info(f"[{cam_id}] config reload: {field} {old_val!r} → {new_val!r}")
-
-        if any_change:
-            logger.info("Config hot-reload complete")
-
-    # ------------------------------------------------------------------
-    # Background writer — snapshot saves and JSONL appends
-    # ------------------------------------------------------------------
-    def _writer_loop(self):
-        """
-        Consumes write tasks from the queue. Runs in its own thread so that
-        cv2.imwrite() and file I/O never stall the inference loop.
-        Exits when it receives the None sentinel from stop().
-        """
-        while True:
-            task = self._write_queue.get()
-            try:
-                if task is None:  # shutdown sentinel
+        if best_id is None or best_iou < 0.25:
+            for tid, t in self._tracks.items():
+                if t["label"] != label:
+                    continue
+                pcx, pcy = t["center"]
+                if abs(cx - pcx) < 40 and abs(cy - pcy) < 40:
+                    best_id = tid
                     break
-                snapshot_path = task["snapshot_path"]
-                frame = task["frame"]
-                event = task["event"]
 
-                if snapshot_path and frame is not None:
-                    try:
-                        Path(snapshot_path).parent.mkdir(parents=True, exist_ok=True)
-                        cv2.imwrite(snapshot_path, frame)
-                    except Exception as exc:
-                        logger.error(f"Snapshot write failed ({snapshot_path}): {exc}")
+        if best_id is None:
+            self._counter += 1
+            self._tracks[self._counter] = {
+                "label":        label,
+                "box":          box,
+                "center":       (cx, cy),
+                "motion_count": 0,
+                "missed":       0,
+            }
+            return False
 
-                try:
-                    with open(EVENTS_LOG, "a") as f:
-                        f.write(json.dumps(event) + "\n")
-                except Exception as exc:
-                    logger.error(f"Event log write failed: {exc}")
+        t = self._tracks[best_id]
+        prev_cx, prev_cy = t["center"]
+        dx = abs(cx - prev_cx)
+        dy = abs(cy - prev_cy)
 
-            finally:
-                self._write_queue.task_done()
+        if dx >= MOTION_THRESHOLD or dy >= MOTION_THRESHOLD:
+            t["motion_count"] += 1
+            t["center"] = (cx, cy)
+            t["box"]    = box
+        else:
+            t["motion_count"] = 0
 
-        logger.info("Writer thread exited")
+        t["missed"] = 0
 
-    # ------------------------------------------------------------------
-    # Inference loop
-    # ------------------------------------------------------------------
-    def _inference_loop(self):
-        status_publish_interval = 5.0
-        last_status_publish = 0.0
+        stale = [tid for tid, tr in self._tracks.items()
+                 if tid != best_id and tr["missed"] > TRACK_STALE_FRAMES]
+        for tid in stale:
+            del self._tracks[tid]
+        for tid, tr in self._tracks.items():
+            if tid != best_id:
+                tr["missed"] += 1
 
-        while self._running:
-            # A camera is active when it's not paused and has sent a frame recently.
-            # is_stale covers both "never connected" and "stream dropped" — it is
-            # the correct signal here rather than worker.online, which can lag on
-            # a silent stream that hasn't formally errored yet.
-            active = [
-                cam_id
-                for cam_id, w in self._workers.items()
-                if not w.paused and not w.is_stale
-            ]
+        return t["motion_count"] >= MOTION_FRAMES_REQUIRED
 
-            if not active:
-                logger.debug("No active cameras — waiting")
-                time.sleep(1.0)
+
+# ─────────────────────────────────────────────
+# PTZ CONTROLLER  (per PTZ camera)
+# ─────────────────────────────────────────────
+
+# Tuning params preserved from the original per-camera scripts
+PTZ_PARAMS = {
+    "backyard": {
+        "Kp_pan":            1.0,
+        "Kp_tilt":           1.0,
+        "MIN_SPEED":         0.15,
+        "MAX_SPEED":         1.0,
+        "DEAD_ZONE":         25,
+        "PTZ_COOLDOWN":      0.2,
+        "ZOOM_SPEED":        0.15,
+        "ZOOM_TARGET_RATIO": 0.45,
+        "ZOOM_TOLERANCE":    0.08,
+        "ZOOM_COOLDOWN":     1.5,
+        "ZOOM_OUT_DELAY":    5.0,
+        "CONFIRM_FRAMES":    2,
+    },
+    "indoor": {
+        "Kp_pan":            0.3,
+        "Kp_tilt":           0.3,
+        "MIN_SPEED":         0.04,
+        "MAX_SPEED":         0.35,
+        "DEAD_ZONE":         60,
+        "PTZ_COOLDOWN":      0.4,
+        "ZOOM_SPEED":        0.15,
+        "ZOOM_TARGET_RATIO": 0.45,
+        "ZOOM_TOLERANCE":    0.08,
+        "ZOOM_COOLDOWN":     1.5,
+        "ZOOM_OUT_DELAY":    5.0,
+        "CONFIRM_FRAMES":    2,
+    },
+}
+
+
+class PTZController:
+    def __init__(self, cam_id: str, host: str, port: int, user: str, password: str):
+        self.cam_id = cam_id
+        self.p      = PTZ_PARAMS[cam_id]
+        log.info("[%s] Connecting PTZ at %s:%d ...", cam_id, host, port)
+        onvif_cam   = ONVIFCamera(host, port, user, password)
+        media_svc   = onvif_cam.create_media_service()
+        ptz_svc     = onvif_cam.create_ptz_service()
+        token       = media_svc.GetProfiles()[0].token
+        self._ptz   = ptz_svc
+        self._token = token
+        self._lock  = threading.Lock()
+        log.info("[%s] PTZ ready", cam_id)
+
+        # Per-camera tracking state
+        self.last_detection = 0.0
+        self.last_ptz_cmd   = 0.0
+        self.last_zoom_cmd  = 0.0
+        self.confirm_count: dict = {}
+
+    def move(self, pan: float, tilt: float, zoom: float = 0.0):
+        with self._lock:
+            req = self._ptz.create_type("ContinuousMove")
+            req.ProfileToken = self._token
+            req.Velocity = {"PanTilt": {"x": pan, "y": tilt}, "Zoom": {"x": zoom}}
+            self._ptz.ContinuousMove(req)
+
+    def stop(self):
+        with self._lock:
+            self._ptz.Stop({"ProfileToken": self._token})
+
+    def calc_speed(self, offset: float, max_offset: float, Kp: float) -> float:
+        p = self.p
+        if abs(offset) < p["DEAD_ZONE"]:
+            return 0.0
+        speed = Kp * (offset / max_offset)
+        if abs(speed) < p["MIN_SPEED"]:
+            speed = p["MIN_SPEED"] * (1 if speed > 0 else -1)
+        return max(-p["MAX_SPEED"], min(p["MAX_SPEED"], speed))
+
+
+# ─────────────────────────────────────────────
+# CAMERA PROCESSOR  (per-camera state + output frame)
+# ─────────────────────────────────────────────
+
+class CameraProcessor:
+    def __init__(self, cam_id: str):
+        self.cam_id       = cam_id
+        self._out_frame   = None
+        self._out_lock    = threading.Lock()
+        self.last_trigger: dict = {}
+        self.vtracker     = VehicleTracker() if cam_id == "frontyard" else None
+        self.ptz: Optional[PTZController] = None
+
+    def set_ptz(self, ptz: PTZController):
+        self.ptz = ptz
+
+    def put_frame(self, frame):
+        with self._out_lock:
+            self._out_frame = frame
+
+    def get_frame(self):
+        with self._out_lock:
+            return self._out_frame
+
+    def cooldown_ok(self, label: str) -> bool:
+        now = time.time()
+        if now - self.last_trigger.get(label, 0) >= COOLDOWN_SEC:
+            self.last_trigger[label] = now
+            return True
+        return False
+
+
+# ─────────────────────────────────────────────
+# SNAPSHOT + MQTT + EVENT HELPER
+# ─────────────────────────────────────────────
+
+def _trigger_action(cam_id: str, label: str, conf: float, frame, snap: bool, mqtt_e: bool):
+    img_path = None
+    if snap:
+        snap_dir = os.path.expanduser(
+            "~/robotics/jetson-vision/" +
+            (cam_cfg(cam_id, "snapshot_dir") or "detections/%s" % cam_id)
+        )
+        os.makedirs(snap_dir, exist_ok=True)
+        ts       = datetime.now().strftime("%Y%m%d_%H%M%S")
+        img_path = os.path.join(snap_dir, "%s_%s.jpg" % (label, ts))
+        cv2.imwrite(img_path, frame)
+        log.info("[%s] SNAPSHOT  %s %.0f%%  %s",
+                 cam_id, label, conf * 100, os.path.basename(img_path))
+    if mqtt_e:
+        topic   = TOPIC_MAP.get(cam_id, {}).get(label, "%s/detection" % cam_id)
+        payload = json.dumps({
+            "class":      label,
+            "confidence": round(conf, 3),
+            "timestamp":  datetime.now().isoformat(),
+            "source":     cam_id,
+        })
+        try:
+            _mqtt.publish(topic, payload)
+        except Exception as e:
+            log.warning("[%s] MQTT publish failed: %s", cam_id, e)
+    log_event(cam_id, label, conf, img_path)
+
+
+# ─────────────────────────────────────────────
+# PER-FRAME PROCESSING
+# ─────────────────────────────────────────────
+
+def process_frame(proc: CameraProcessor, frame, model, now: float):
+    cam_id = proc.cam_id
+    h, w   = frame.shape[:2]
+    cx0    = w // 2
+    cy0    = h // 2
+
+    # Snapshot config values once per frame
+    watch  = set(cam_cfg(cam_id, "watch_classes") or ["person"])
+    conf_t = cam_cfg(cam_id, "confidence") or 0.50
+    snap   = cam_cfg(cam_id, "snapshots")    if cam_cfg(cam_id, "snapshots")    is not None else False
+    mqtt_e = cam_cfg(cam_id, "mqtt_enabled") if cam_cfg(cam_id, "mqtt_enabled") is not None else False
+    mon    = cam_cfg(cam_id, "monitor_only") or False
+    track  = cam_cfg(cam_id, "tracking")     if cam_cfg(cam_id, "tracking")     is not None else True
+
+    # YOLO inference (shared GPU model)
+    results   = model(frame, conf=conf_t, verbose=False)
+    annotated = frame.copy()
+    raw_boxes = []
+
+    for r in results:
+        for box in r.boxes:
+            cls_id = int(box.cls[0])
+            label  = model.names[cls_id]
+            if label not in watch:
                 continue
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            conf = float(box.conf[0])
 
-            ordered = self._scheduler.get_ordered_cameras(active)
-            if not ordered:
-                # All cameras are up to date — sleep until next camera is due
-                time.sleep(0.01)
-                continue
-
-            reduce_res = self._scheduler.reduce_resolution_needed()
-            cycle_start = time.perf_counter()
-            over_budget = False
-
-            for cam_id in ordered:
-                worker = self._workers[cam_id]
-                frame = worker.get_frame()
-                if frame is None:
-                    # Worker online but no frame yet — skip this camera this cycle
+            # Frontyard: skip parked vehicles
+            if proc.vtracker is not None and label in VEHICLE_CLASSES:
+                if not proc.vtracker.is_moving(label, x1, y1, x2, y2):
+                    log.debug("[frontyard] PARKED  %s %.0f%%", label, conf * 100)
                     continue
 
-                # Apply dynamic resolution scaling
-                scale = self._input_scale
-                if reduce_res and scale > 0.75:
-                    # 3-way trigger: force additional reduction
-                    scale = min(scale, 0.75)
+            raw_boxes.append((label, conf, x1, y1, x2, y2))
 
-                if scale < 1.0:
-                    h, w = frame.shape[:2]
-                    frame_in = cv2.resize(frame, (int(w * scale), int(h * scale)))
+    # ── PTZ camera ────────────────────────────────────────────
+    if proc.ptz is not None:
+        ptz = proc.ptz
+        p   = ptz.p
+
+        # Confirmation filter (decay on miss, increment on hit)
+        seen = {b[0] for b in raw_boxes}
+        for lbl in list(ptz.confirm_count.keys()):
+            if lbl not in seen:
+                ptz.confirm_count[lbl] = max(0, ptz.confirm_count[lbl] - 1)
+        for lbl in seen:
+            ptz.confirm_count[lbl] = ptz.confirm_count.get(lbl, 0) + 1
+
+        confirmed = [b for b in raw_boxes
+                     if ptz.confirm_count.get(b[0], 0) >= p["CONFIRM_FRAMES"]]
+
+        if confirmed:
+            # Priority: person first, then largest box
+            label, conf, x1, y1, x2, y2 = sorted(
+                confirmed,
+                key=lambda b: (0 if b[0] == "person" else 1,
+                               -((b[4] - b[2]) * (b[5] - b[3])))
+            )[0]
+            ptz.last_detection = now
+
+            target_cx = (x1 + x2) // 2
+            target_cy = y1 + (y2 - y1) // 3
+            offset_x  = target_cx - cx0
+            offset_y  = target_cy - cy0
+
+            # Pan / tilt
+            if (not mon) and track and now - ptz.last_ptz_cmd > p["PTZ_COOLDOWN"]:
+                pan  = ptz.calc_speed(offset_x, cx0, p["Kp_pan"])
+                tilt = -ptz.calc_speed(offset_y, cy0, p["Kp_tilt"])
+                if pan != 0 or tilt != 0:
+                    ptz.move(pan, tilt, 0.0)
                 else:
-                    frame_in = frame
+                    ptz.stop()
+                    # Zoom only when centered
+                    if now - ptz.last_zoom_cmd > p["ZOOM_COOLDOWN"]:
+                        box_ratio = (y2 - y1) / h
+                        zoom_err  = p["ZOOM_TARGET_RATIO"] - box_ratio
+                        if abs(zoom_err) > p["ZOOM_TOLERANCE"]:
+                            ptz.move(0.0, 0.0,
+                                     p["ZOOM_SPEED"] if zoom_err > 0 else -p["ZOOM_SPEED"])
+                            ptz.last_zoom_cmd = now
+                ptz.last_ptz_cmd = now
+            elif mon or not track:
+                ptz.stop()
 
-                # --- YOLO inference ---
-                results = self._model(frame_in, verbose=False)[0]
+            # Annotate
+            mode_label = "MONITOR" if (mon or not track) else "TRACKING"
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 80), 2)
+            cv2.circle(annotated, (target_cx, target_cy), 8, (0, 200, 80), -1)
+            cv2.line(annotated, (cx0, cy0), (target_cx, target_cy), (0, 255, 255), 1)
+            cv2.putText(annotated, "%s %d%%" % (label, int(conf * 100)),
+                        (x1, max(y1 - 10, 16)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 80), 2)
+            cv2.putText(annotated, "%s  offset(%d,%d)" % (mode_label, offset_x, offset_y),
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 80), 2)
 
-                # --- Process detections ---
-                cam_cfg = self._cam_configs[cam_id]
-                conf_threshold = cam_cfg.get("confidence", 0.60)
-                watch_classes = set(cam_cfg.get("watch_classes", []))
-                snapshots_enabled = cam_cfg.get("snapshots", False)
-                mqtt_enabled = cam_cfg.get("mqtt_enabled", True)
+            # Snapshot / MQTT / event log
+            if proc.cooldown_ok(label):
+                _trigger_action(cam_id, label, conf, annotated, snap, mqtt_e)
 
-                # best confidence per class for confirmed detections
-                detected_classes_conf: dict[str, float] = {}
-                # all boxes for annotation and publish payload
-                boxes_data: list[dict] = []
+        else:
+            # No confirmed detection
+            since_last = now - ptz.last_detection
+            if since_last >= 0.5:
+                ptz.stop()
 
-                if results.boxes is not None and len(results.boxes):
-                    for box in results.boxes:
-                        conf = float(box.conf[0])
-                        cls_id = int(box.cls[0])
-                        cls_name = self._model.names[cls_id]
+            # Zoom out after losing target
+            if (not mon) and track and ptz.last_detection > 0 and since_last > p["ZOOM_OUT_DELAY"]:
+                if now - ptz.last_zoom_cmd > p["ZOOM_COOLDOWN"]:
+                    ptz.move(0.0, 0.0, -p["ZOOM_SPEED"])
+                    ptz.last_zoom_cmd = now
 
-                        if conf < conf_threshold:
-                            continue
-                        if watch_classes and cls_name not in watch_classes:
-                            continue
+            cv2.putText(annotated, "IDLE" if (not mon and track) else "MONITOR",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (160, 160, 160), 2)
 
-                        xyxy = [round(float(v), 1) for v in box.xyxy[0]]
-                        boxes_data.append({
-                            "class": cls_name,
-                            "confidence": round(conf, 3),
-                            "bbox": xyxy,
-                        })
+        # Crosshair
+        cv2.line(annotated, (cx0 - 30, cy0), (cx0 + 30, cy0), (255, 255, 255), 1)
+        cv2.line(annotated, (cx0, cy0 - 30), (cx0, cy0 + 30), (255, 255, 255), 1)
 
-                        if cls_name not in detected_classes_conf or conf > detected_classes_conf[cls_name]:
-                            detected_classes_conf[cls_name] = conf
+    # ── Fixed camera (frontyard) ──────────────────────────────
+    else:
+        for label, conf, x1, y1, x2, y2 in raw_boxes:
+            cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 200, 80), 2)
+            cv2.putText(annotated, "%s %d%%" % (label, int(conf * 100)),
+                        (x1, max(y1 - 8, 16)),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 80), 2)
 
-                # Scale bounding boxes back to original resolution if we downscaled
-                if scale < 1.0 and boxes_data:
-                    inv = 1.0 / scale
-                    for b in boxes_data:
-                        b["bbox"] = [round(v * inv, 1) for v in b["bbox"]]
+            if not mon and proc.cooldown_ok(label):
+                _trigger_action(cam_id, label, conf, annotated, snap, mqtt_e)
 
-                # --- Annotate frame (bounding boxes drawn here, not in stream_proxy) ---
-                annotated = frame.copy()
-                for b in boxes_data:
-                    x1, y1, x2, y2 = [int(v) for v in b["bbox"]]
-                    label = f"{b['class']} {b['confidence']:.2f}"
-                    cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(
-                        annotated, label, (x1, max(y1 - 8, 0)),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1,
-                    )
-                worker.set_annotated_frame(annotated)
+    # Timestamp
+    cv2.putText(annotated, datetime.now().strftime("%Y-%m-%d  %H:%M:%S"),
+                (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-                # --- MQTT publish annotated frame info ---
-                # Publish raw detection list (all boxes, before persistence filter)
-                # so dashboard can show live inference even without confirmed events
-                if mqtt_enabled and boxes_data:
-                    self._mqtt.publish(
-                        f"dhras/cameras/{cam_id}/status",
-                        {
-                            "online": True,
-                            "detections_raw": len(boxes_data),
-                            "timestamp": datetime.now().isoformat(),
-                        },
-                    )
-
-                # --- Detection persistence check ---
-                confirmed = self._tracker.update(cam_id, set(detected_classes_conf.keys()))
-
-                if confirmed:
-                    self._scheduler.set_triggered(cam_id, True)
-
-                for cls_name in confirmed:
-                    conf = detected_classes_conf[cls_name]
-                    best_box = next(
-                        (b for b in boxes_data if b["class"] == cls_name), {}
-                    )
-
-                    # Compute the snapshot path now (deterministic timestamp) so the
-                    # MQTT payload can include it immediately. The actual JPEG write
-                    # and JSONL append are handed off to the background writer thread.
-                    snapshot_path = None
-                    if snapshots_enabled:
-                        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                        snapshot_path = str(DETECTIONS_DIR / cam_id / f"{cls_name}_{ts}.jpg")
-
-                    event = {
-                        "timestamp": datetime.now().isoformat(),
-                        "camera_id": cam_id,
-                        "class": cls_name,
-                        "confidence": round(conf, 3),
-                        "bbox": best_box.get("bbox"),
-                        "snapshot": snapshot_path,
-                    }
-
-                    # Queue disk I/O — never block the inference loop on file writes
-                    self._write_queue.put({
-                        "frame": annotated.copy() if snapshot_path else None,
-                        "snapshot_path": snapshot_path,
-                        "event": event,
-                    })
-
-                    if mqtt_enabled:
-                        self._mqtt.publish(
-                            f"dhras/cameras/{cam_id}/detection",
-                            {
-                                "class": cls_name,
-                                "confidence": round(conf, 3),
-                                "bbox": best_box.get("bbox"),
-                                "zone": None,           # zone mapping added in Session 3
-                                "timestamp": event["timestamp"],
-                                "snapshot": snapshot_path,
-                                "camera_id": cam_id,
-                            },
-                        )
-                        logger.info(
-                            f"[{cam_id}] DETECTION: {cls_name} "
-                            f"conf={conf:.2f}  snapshot={snapshot_path}"
-                        )
-
-                # Record inference time for FPS tracking
-                self._fps_counter[cam_id].append(time.time())
-                self._scheduler.mark_inferred(cam_id)
-
-                # --- Cycle budget check ---
-                elapsed_ms = (time.perf_counter() - cycle_start) * 1000
-                if elapsed_ms > self.CYCLE_BUDGET_MS:
-                    # Over budget: reduce input resolution for next cycle and
-                    # skip remaining cameras (starvation protection handles them next cycle)
-                    if self._input_scale > self.SCALE_MIN:
-                        self._input_scale = max(
-                            self.SCALE_MIN, self._input_scale - self.SCALE_STEP_DOWN
-                        )
-                        logger.warning(
-                            f"Cycle budget exceeded ({elapsed_ms:.0f}ms > {self.CYCLE_BUDGET_MS}ms)"
-                            f" — input scale reduced to {self._input_scale:.2f}"
-                        )
-                    over_budget = True
-                    break  # skip remaining cameras this cycle
-
-            # Recover resolution gradually when cycle is well within budget
-            cycle_ms = (time.perf_counter() - cycle_start) * 1000
-            if (
-                not over_budget
-                and cycle_ms < self.CYCLE_BUDGET_MS * self.SCALE_RECOVERY_THRESHOLD
-                and self._input_scale < 1.0
-            ):
-                self._input_scale = min(1.0, self._input_scale + self.SCALE_STEP_UP)
-
-            # Periodic status publish (throttled to avoid MQTT flooding)
-            now = time.time()
-            if now - last_status_publish >= status_publish_interval:
-                last_status_publish = now
-                self._publish_camera_status()
-                logger.debug(
-                    f"Cycle: {cycle_ms:.1f}ms  scale={self._input_scale:.2f}"
-                    f"  active={len(active)}"
-                )
-
-    def _publish_camera_status(self):
-        """Publish online/offline and achieved FPS for each camera every 5s."""
-        now = time.time()
-        for cam_id, worker in self._workers.items():
-            # Compute achieved FPS from recent inference timestamps
-            times = list(self._fps_counter[cam_id])
-            if len(times) >= 2:
-                window = now - times[0]
-                achieved_fps = round((len(times) - 1) / window, 1) if window > 0 else 0.0
-            else:
-                achieved_fps = 0.0
-
-            self._mqtt.publish(
-                f"dhras/cameras/{cam_id}/status",
-                {
-                    "online": worker.online,
-                    "paused": worker.paused,
-                    "fps": achieved_fps,
-                    "last_frame_age_sec": round(now - worker.last_frame_time, 1),
-                    "input_scale": round(self._input_scale, 2),
-                    "timestamp": datetime.now().isoformat(),
-                },
-            )
+    proc.put_frame(annotated)
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
+# ─────────────────────────────────────────────
+# FLASK — MJPEG STREAMS  (port 8081)
+# ─────────────────────────────────────────────
+
+flask_app  = Flask(__name__)
+CORS(flask_app)
+_processors: dict = {}  # populated in main() before inference starts
+
+
+def _generate_stream(cam_id: str):
+    proc = _processors.get(cam_id)
+    if proc is None:
+        return
+    while True:
+        time.sleep(0.04)
+        frame = proc.get_frame()
+        if frame is None:
+            continue
+        ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+        if not ok:
+            continue
+        yield (b"--frame\r\nContent-Type: image/jpeg\r\n\r\n"
+               + buf.tobytes() + b"\r\n")
+
+
+@flask_app.route("/stream/<cam_id>")
+def stream_route(cam_id):
+    if cam_id not in _processors:
+        return Response("Unknown camera: %s" % cam_id, status=404)
+    return Response(_generate_stream(cam_id),
+                    mimetype="multipart/x-mixed-replace; boundary=frame")
+
+
+@flask_app.route("/status/<cam_id>")
+def status_route(cam_id):
+    proc = _processors.get(cam_id)
+    if proc is None:
+        return Response("Not found", status=404)
+    return jsonify({"camera": cam_id, "online": proc.get_frame() is not None,
+                    "mode": "ACTIVE"})
+
+
+@flask_app.route("/health")
+def health():
+    return jsonify({cam: _processors[cam].get_frame() is not None
+                    for cam in _processors})
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
 def main():
-    config = load_config()
-    service = VisionService(config)
+    # ── Load YOLO ─────────────────────────────
+    log.info("Loading YOLO: %s on GPU ...", YOLO_MODEL)
+    model = YOLO(YOLO_MODEL)
+    model.to("cuda")
+    log.info("YOLO ready on GPU")
+
+    # ── Init cameras ──────────────────────────
+    cameras_conf = _load_full_config()["cameras"]
+    workers:    dict = {}
+    processors: dict = {}
+
+    for cam_id, ccfg in cameras_conf.items():
+        workers[cam_id]    = CameraWorker(cam_id, ccfg["rtsp_url"])
+        processors[cam_id] = CameraProcessor(cam_id)
+
+    # ── Init PTZ controllers ───────────────────
+    for cam_id, ccfg in cameras_conf.items():
+        if ccfg.get("type") == "ptz" and cam_id in PTZ_PARAMS:
+            try:
+                ptz = PTZController(
+                    cam_id,
+                    ccfg["host"],
+                    ccfg.get("onvif_port", 80),
+                    ccfg.get("ptz_user", "admin"),
+                    ccfg.get("ptz_pass", ""),
+                )
+                processors[cam_id].set_ptz(ptz)
+            except Exception as e:
+                log.error("[%s] PTZ init failed: %s — running without auto-PTZ", cam_id, e)
+
+    # ── Expose to Flask ────────────────────────
+    global _processors
+    _processors = processors
+
+    # ── Start Flask ────────────────────────────
+    threading.Thread(
+        target=lambda: flask_app.run(host="0.0.0.0", port=8081,
+                                     debug=False, use_reloader=False, threaded=True),
+        daemon=True,
+        name="flask-streams",
+    ).start()
+    log.info("MJPEG streams → http://192.168.1.17:8081/stream/{frontyard,backyard,indoor}")
+
+    # ── Wait for first frames ──────────────────
+    log.info("Waiting for camera frames...")
+    for cam_id, worker in workers.items():
+        for _ in range(40):
+            if worker.read() is not None:
+                log.info("[%s] first frame ready", cam_id)
+                break
+            time.sleep(0.5)
+        else:
+            log.warning("[%s] no frame after 20s — will keep trying", cam_id)
+
+    log.info("Inference loop starting. Ctrl+C to stop.")
+
+    # ── Central inference loop ─────────────────
+    frame_count = 0
     try:
-        service.start()
+        while True:
+            now = time.time()
+            frame_count += 1
+
+            if frame_count % 30 == 0:
+                reload_config()
+
+            for cam_id, worker in workers.items():
+                frame = worker.read()
+                if frame is None:
+                    continue
+                try:
+                    process_frame(processors[cam_id], frame, model, now)
+                except Exception as e:
+                    log.warning("[%s] process_frame error: %s", cam_id, e)
+
+            time.sleep(0.03)
+
     except KeyboardInterrupt:
-        logger.info("Keyboard interrupt — shutting down")
-    except Exception as exc:
-        logger.exception(f"Fatal error: {exc}")
+        log.info("Stopped by user.")
+    finally:
+        for proc in processors.values():
+            if proc.ptz:
+                try:
+                    proc.ptz.stop()
+                except Exception:
+                    pass
+        for worker in workers.values():
+            worker.stop()
+        _mqtt.loop_stop()
+        log.info("Shutdown complete.")
 
 
 if __name__ == "__main__":
