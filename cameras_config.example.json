@@ -1,0 +1,79 @@
+{
+  "mqtt": {
+    "broker": "192.168.1.xxx",
+    "port": 1883
+  },
+  "cooldown_sec": 60,
+  "stream_port": 8080,
+  "cameras": {
+    "frontyard": {
+      "name": "Front Yard",
+      "host": "192.168.1.xxx",
+      "rtsp_url": "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/STREAM_PATH",
+      "stream_port": 5000,
+      "type": "fixed",
+      "base_fps": 3,
+      "triggered_fps": 10,
+      "watch_classes": {
+        "person": 0.55,
+        "car": 0.70,
+        "truck": 0.70,
+        "bus": 0.70,
+        "bicycle": 0.60,
+        "dog": 0.45,
+        "cat": 0.45,
+        "bird": 0.40
+      },
+      "snapshots": true,
+      "mqtt_enabled": true,
+      "monitor_only": false,
+      "tracking": false,
+      "snapshot_dir": "detections/frontyard"
+    },
+    "backyard": {
+      "name": "Back Yard PTZ",
+      "host": "192.168.1.xxx",
+      "onvif_port": 80,
+      "ptz_user": "USERNAME",
+      "ptz_pass": "PASSWORD",
+      "rtsp_url": "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/STREAM_PATH",
+      "stream_port": 5001,
+      "type": "ptz",
+      "base_fps": 3,
+      "triggered_fps": 10,
+      "watch_classes": {
+        "person": 0.55,
+        "dog": 0.45,
+        "cat": 0.45,
+        "bird": 0.40,
+        "horse": 0.45,
+        "bear": 0.50
+      },
+      "snapshots": true,
+      "mqtt_enabled": false,
+      "monitor_only": false,
+      "tracking": true,
+      "snapshot_dir": "detections/backyard"
+    },
+    "indoor": {
+      "name": "Indoor PTZ",
+      "host": "192.168.1.xxx",
+      "onvif_port": 80,
+      "ptz_user": "USERNAME",
+      "ptz_pass": "PASSWORD",
+      "rtsp_url": "rtsp://USERNAME:PASSWORD@CAMERA_IP:554/STREAM_PATH",
+      "stream_port": 5002,
+      "type": "ptz",
+      "base_fps": 2,
+      "triggered_fps": 7,
+      "watch_classes": {
+        "person": 0.50
+      },
+      "snapshots": false,
+      "mqtt_enabled": false,
+      "monitor_only": false,
+      "tracking": false,
+      "snapshot_dir": "detections/indoor"
+    }
+  }
+}
