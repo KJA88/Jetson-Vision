@@ -38,3 +38,9 @@ __pycache__/
 *.log
 *.jsonl
 Backyard_surveyor.py
+
+# Local safety backups and archived experiments
+SAFE_BACKUPS/
+ARCHIVE/
+*.before_change
+*.backup_*
