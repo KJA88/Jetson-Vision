@@ -450,15 +450,36 @@ def process_frame(proc: CameraProcessor, frame, model, now: float):
     cy0    = h // 2
 
     # Snapshot config values once per frame
-    watch  = set(cam_cfg(cam_id, "watch_classes") or ["person"])
-    conf_t = cam_cfg(cam_id, "confidence") or 0.50
+    raw_watch = cam_cfg(cam_id, "watch_classes") or ["person"]
+
+    # Backward compatible watch_classes handling:
+    # Old format: ["person", "car"] uses shared camera confidence.
+    # New format: {"person": 0.55, "car": 0.70} uses per-class confidence.
+    legacy_conf = cam_cfg(cam_id, "confidence")
+    if legacy_conf is None:
+        legacy_conf = 0.50
+
+    if isinstance(raw_watch, dict):
+        watch_conf = {}
+        for label, value in raw_watch.items():
+            try:
+                watch_conf[label] = float(value)
+            except (TypeError, ValueError):
+                watch_conf[label] = float(legacy_conf)
+    else:
+        watch_conf = {label: float(legacy_conf) for label in raw_watch}
+
+    # Use a low YOLO floor, then apply our own per-class threshold below.
+    # This allows deer/person/car/etc. to each have different thresholds.
+    yolo_floor = 0.05
+
     snap   = cam_cfg(cam_id, "snapshots")    if cam_cfg(cam_id, "snapshots")    is not None else False
     mqtt_e = cam_cfg(cam_id, "mqtt_enabled") if cam_cfg(cam_id, "mqtt_enabled") is not None else False
     mon    = cam_cfg(cam_id, "monitor_only") or False
     track  = cam_cfg(cam_id, "tracking")     if cam_cfg(cam_id, "tracking")     is not None else True
 
     # YOLO inference (shared GPU model)
-    results   = model(frame, conf=conf_t, verbose=False)
+    results   = model(frame, conf=yolo_floor, verbose=False)
     annotated = frame.copy()
     raw_boxes = []
 
@@ -466,10 +487,12 @@ def process_frame(proc: CameraProcessor, frame, model, now: float):
         for box in r.boxes:
             cls_id = int(box.cls[0])
             label  = model.names[cls_id]
-            if label not in watch:
+            if label not in watch_conf:
                 continue
             x1, y1, x2, y2 = map(int, box.xyxy[0])
             conf = float(box.conf[0])
+            if conf < watch_conf[label]:
+                continue
 
             # Frontyard: skip parked vehicles
             if proc.vtracker is not None and label in VEHICLE_CLASSES:

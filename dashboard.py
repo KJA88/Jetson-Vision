@@ -632,15 +632,10 @@ section.active { display: block; }
       </div>
 
       <div class="settings-section">
-        <h3>Confidence Threshold</h3>
-        <div class="slider-row">
-          <label>
-            <span>Minimum confidence</span>
-            <span id="conf-val">0.50</span>
-          </label>
-          <input type="range" id="settings-conf" min="5" max="95" step="5"
-                 oninput="document.getElementById('conf-val').textContent=(this.value/100).toFixed(2)">
-        </div>
+        <h3>Per-Class Confidence</h3>
+        <p style="font-size:0.78rem;color:var(--muted);line-height:1.4">
+          Select the classes to monitor and set a separate confidence threshold for each one.
+        </p>
       </div>
 
       <div class="settings-section">
@@ -847,24 +842,80 @@ function openSettings(camId) {
   const cam = config.cameras[camId];
   document.getElementById('settings-title').textContent = cam.name + ' — Settings';
 
-  // Classes
+  // Classes + per-class confidence
   const grid = document.getElementById('settings-classes');
   grid.innerHTML = '';
-  for (const cls of ALL_CLASSES) {
-    const selected = (cam.watch_classes || []).includes(cls);
-    const chip = document.createElement('div');
-    chip.className = 'class-chip' + (selected ? ' selected' : '');
-    chip.dataset.cls = cls;
-    chip.textContent = cls;
-    chip.onclick = () => { chip.classList.toggle('selected'); };
-    grid.appendChild(chip);
-  }
 
-  // Confidence
-  const confEl = document.getElementById('settings-conf');
-  const confVal = Math.round((cam.confidence || 0.5) * 100);
-  confEl.value = confVal;
-  document.getElementById('conf-val').textContent = (confVal / 100).toFixed(2);
+  const watch = cam.watch_classes || [];
+  const legacyConf = Number(cam.confidence || 0.5);
+  const watchIsMap = watch && !Array.isArray(watch) && typeof watch === 'object';
+
+  for (const cls of ALL_CLASSES) {
+    const selected = watchIsMap
+      ? Object.prototype.hasOwnProperty.call(watch, cls)
+      : (Array.isArray(watch) ? watch.includes(cls) : false);
+
+    const conf = selected
+      ? Number(watchIsMap ? watch[cls] : legacyConf)
+      : legacyConf;
+
+    const row = document.createElement('div');
+    row.className = 'class-conf-row';
+    row.dataset.cls = cls;
+    row.style.display = 'grid';
+    row.style.gridTemplateColumns = 'minmax(0, 1fr) 4.4rem';
+    row.style.gap = '0.35rem';
+    row.style.alignItems = 'center';
+    row.style.padding = '0.35rem 0';
+    row.style.borderBottom = '1px solid var(--border)';
+    row.style.maxWidth = '100%';
+    row.style.overflow = 'hidden';
+
+    const label = document.createElement('label');
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.gap = '0.35rem';
+    label.style.fontSize = '0.82rem';
+    label.style.minWidth = '0';
+    label.style.overflow = 'hidden';
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.className = 'class-enable';
+    cb.checked = selected;
+
+    const name = document.createElement('span');
+    name.textContent = cls;
+    name.style.overflow = 'hidden';
+    name.style.textOverflow = 'ellipsis';
+    name.style.whiteSpace = 'nowrap';
+
+    const input = document.createElement('input');
+    input.type = 'number';
+    input.className = 'class-conf';
+    input.min = '0.05';
+    input.max = '0.95';
+    input.step = '0.05';
+    input.value = Number.isFinite(conf) ? conf.toFixed(2) : '0.50';
+    input.disabled = !selected;
+    input.style.width = '4.4rem';
+    input.style.maxWidth = '4.4rem';
+    input.style.background = 'var(--surface)';
+    input.style.color = 'var(--text)';
+    input.style.border = '1px solid var(--border2)';
+    input.style.borderRadius = '6px';
+    input.style.padding = '0.25rem';
+
+    cb.onchange = () => {
+      input.disabled = !cb.checked;
+    };
+
+    label.appendChild(cb);
+    label.appendChild(name);
+    row.appendChild(label);
+    row.appendChild(input);
+    grid.appendChild(row);
+  }
 
   // Toggles
   document.getElementById('settings-snapshots').checked = !!cam.snapshots;
@@ -884,11 +935,21 @@ async function saveSettings() {
   btn.disabled = true;
   msg.textContent = 'Saving...';
 
-  const classes = [...document.querySelectorAll('#settings-classes .class-chip.selected')]
-                    .map(c => c.dataset.cls);
+  const watchClasses = {};
+  document.querySelectorAll('#settings-classes .class-conf-row').forEach(row => {
+    const cb = row.querySelector('.class-enable');
+    const input = row.querySelector('.class-conf');
+    if (!cb || !input || !cb.checked) return;
+
+    let conf = parseFloat(input.value);
+    if (!Number.isFinite(conf)) conf = 0.50;
+    conf = Math.max(0.05, Math.min(0.95, conf));
+
+    watchClasses[row.dataset.cls] = Number(conf.toFixed(2));
+  });
+
   const data = {
-    watch_classes: classes,
-    confidence:    parseFloat(document.getElementById('settings-conf').value) / 100,
+    watch_classes: watchClasses,
     snapshots:     document.getElementById('settings-snapshots').checked,
     mqtt_enabled:  document.getElementById('settings-mqtt').checked,
     monitor_only:  document.getElementById('settings-monitor').checked,
