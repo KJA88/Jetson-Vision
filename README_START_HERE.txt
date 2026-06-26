@@ -112,3 +112,44 @@ cd ~/robotics/jetson-vision
 cp dashboard.py dashboard.py.before_change
 cp vision_service.py vision_service.py.before_change
 
+
+## Configuration and Security
+
+The real runtime configuration file is:
+
+    cameras_config.json
+
+This file is private and is intentionally ignored by Git because it may contain:
+
+    real camera IP addresses
+    real RTSP URLs
+    camera usernames
+    camera passwords
+    PTZ login details
+    local network settings
+
+Do not commit cameras_config.json.
+
+A safe public template is provided instead:
+
+    cameras_config.example.json
+
+Use the example file to understand the expected structure. It uses fake placeholders such as:
+
+    192.168.1.xxx
+    USERNAME
+    PASSWORD
+    CAMERA_IP
+    STREAM_PATH
+
+The dashboard and vision service use the real local cameras_config.json at runtime. The example file is only for documentation, setup reference, and GitHub/portfolio visibility.
+
+The current config format supports per-class confidence thresholds, for example:
+
+    "watch_classes": {
+      "person": 0.55,
+      "car": 0.70,
+      "dog": 0.45
+    }
+
+This allows each camera to monitor different object classes with different confidence levels.
