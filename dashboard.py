@@ -86,17 +86,18 @@ def api_update_config(cam_id):
 
 @app.route("/api/cameras/status")
 def api_cameras_status():
-    cfg = load_config()
     statuses = {}
-    for cam_id, cam in cfg["cameras"].items():
-        url = f"http://{cam['host']}:{cam['stream_port']}/status"
+    for cam_id in ["frontyard", "backyard", "indoor"]:
+        url = f"http://127.0.0.1:8081/status/{cam_id}"
         try:
             r = requests.get(url, timeout=1.5)
             s = r.json()
-            s["online"] = True
-            statuses[cam_id] = s
+            statuses[cam_id] = {
+                "online": bool(s.get("online", False)),
+                "mode": s.get("mode", "online")
+            }
         except Exception:
-            statuses[cam_id] = {"online": False}
+            statuses[cam_id] = {"online": False, "mode": "offline"}
     return jsonify(statuses)
 
 
@@ -325,27 +326,45 @@ section.active { display: block; }
 #modal-view .modal-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 10px 14px; border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 5000;
+  background: var(--surface);
 }
 #modal-view .modal-header span { font-size: 0.8rem; letter-spacing: 0.15em; color: var(--muted); text-transform: uppercase; }
 #modal-view img { width: 100%; display: block; }
 .modal-close {
-  background: none; border: none; color: var(--muted); cursor: pointer;
-  font-size: 1.2rem; line-height: 1; padding: 2px 6px;
+  background: #220000;
+  border: 1px solid var(--red);
+  color: #fff;
+  cursor: pointer;
+  font-size: 1.4rem;
+  line-height: 1;
+  padding: 7px 12px;
+  border-radius: 6px;
+  z-index: 6000;
 }
-.modal-close:hover { color: var(--text); }
+.modal-close:hover { background: #550000; color: #fff; }
 
 /* PTZ controls inside full view */
 #ptz-controls {
-  padding: 10px; display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 10px;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
 }
 .ptz-row { display: flex; gap: 6px; }
+.ptz-stack { display: flex; flex-direction: column; align-items: center; gap: 6px; }
+.zoom-stack { display: flex; flex-direction: column; gap: 6px; }
 .ptz-btn {
   width: 52px; height: 52px; background: #161616; border: 1px solid var(--border2);
   border-radius: 6px; color: #ccc; font-size: 1.2rem; cursor: pointer;
   -webkit-tap-highlight-color: transparent; transition: background 0.1s, border-color 0.1s;
 }
 .ptz-btn:active, .ptz-btn.held { background: #2a2a2a; border-color: var(--green); color: var(--green); }
-.ptz-btn.zoom { width: 70px; height: 40px; font-size: 0.85rem; }
+.ptz-btn.zoom { width: 76px; height: 52px; font-size: 0.8rem; }
 
 /* Settings modal */
 #modal-settings .modal-inner {
@@ -509,6 +528,27 @@ section.active { display: block; }
 
 /* ── Misc ── */
 .empty-msg { color: var(--muted); font-size: 0.8rem; padding: 24px 0; text-align: center; letter-spacing: 0.1em; }
+
+/* Full-view 16:9 layout override */
+#modal-view .modal-inner {
+  width: min(96vw, 1200px);
+  max-height: 96vh;
+}
+
+#modal-view img {
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  max-height: calc(100vh - 180px);
+  object-fit: contain;
+  background: #000;
+  display: block;
+}
+
+#ptz-controls {
+  max-height: 34vh;
+  overflow-y: auto;
+}
+
 </style>
 </head>
 <body>
@@ -560,20 +600,18 @@ section.active { display: block; }
     </div>
     <img id="modal-view-stream" src="" alt="stream">
     <div id="ptz-controls" style="display:none">
-      <div class="ptz-row">
-        <button class="ptz-btn" data-dir="up">▲</button>
-      </div>
-      <div class="ptz-row">
-        <button class="ptz-btn" data-dir="left">◀</button>
-        <button class="ptz-btn" data-dir="stop">■</button>
-        <button class="ptz-btn" data-dir="right">▶</button>
-      </div>
-      <div class="ptz-row">
-        <button class="ptz-btn" data-dir="down">▼</button>
-      </div>
-      <div class="ptz-row" style="margin-top:4px">
-        <button class="ptz-btn zoom" data-dir="zoomin">＋ Zoom</button>
-        <button class="ptz-btn zoom" data-dir="zoomout">－ Zoom</button>
+      <div class="ptz-stack">
+        <div class="ptz-row">
+          <button class="ptz-btn" data-dir="up">▲</button>
+        </div>
+        <div class="ptz-row">
+          <button class="ptz-btn" data-dir="left">◀</button>
+          <button class="ptz-btn" data-dir="stop">■</button>
+          <button class="ptz-btn" data-dir="right">▶</button>
+        </div>
+        <div class="ptz-row">
+          <button class="ptz-btn" data-dir="down">▼</button>
+        </div>
       </div>
     </div>
   </div>
