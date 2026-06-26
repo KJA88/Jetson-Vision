@@ -37,3 +37,4 @@ __pycache__/
 *.pyc
 *.log
 *.jsonl
+Backyard_surveyor.py
