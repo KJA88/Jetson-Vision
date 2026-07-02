@@ -357,14 +357,12 @@ section.active { display: block; }
 }
 .ptz-row { display: flex; gap: 6px; }
 .ptz-stack { display: flex; flex-direction: column; align-items: center; gap: 6px; }
-.zoom-stack { display: flex; flex-direction: column; gap: 6px; }
 .ptz-btn {
   width: 52px; height: 52px; background: #161616; border: 1px solid var(--border2);
   border-radius: 6px; color: #ccc; font-size: 1.2rem; cursor: pointer;
   -webkit-tap-highlight-color: transparent; transition: background 0.1s, border-color 0.1s;
 }
 .ptz-btn:active, .ptz-btn.held { background: #2a2a2a; border-color: var(--green); color: var(--green); }
-.ptz-btn.zoom { width: 76px; height: 52px; font-size: 0.8rem; }
 
 /* Settings modal */
 #modal-settings .modal-inner {
@@ -549,6 +547,56 @@ section.active { display: block; }
   overflow-y: auto;
 }
 
+
+
+
+
+/* SESSION 19: fullscreen PTZ pan/tilt controls */
+#modal-view #ptz-controls {
+  position: fixed !important;
+  right: 12px !important;
+  bottom: 18px !important;
+  top: auto !important;
+  left: auto !important;
+  transform: none !important;
+  z-index: 9999 !important;
+
+  display: none;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+
+  padding: 8px !important;
+  border-radius: 12px !important;
+  background: rgba(0, 0, 0, 0.72) !important;
+  border: 1px solid rgba(255, 255, 255, 0.18) !important;
+}
+
+/* Pan/tilt pad stays on right */
+#modal-view .ptz-stack {
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  gap: 5px !important;
+}
+
+#modal-view .ptz-row {
+  display: flex !important;
+  gap: 5px !important;
+  justify-content: center !important;
+}
+
+
+#modal-view .ptz-btn {
+  width: 42px !important;
+  height: 36px !important;
+  min-width: 42px !important;
+  min-height: 36px !important;
+  font-size: 0.95rem !important;
+  padding: 0 !important;
+}
+
+
 </style>
 </head>
 <body>
@@ -613,7 +661,7 @@ section.active { display: block; }
           <button class="ptz-btn" data-dir="down">▼</button>
         </div>
       </div>
-    </div>
+</div>
   </div>
 </div>
 
@@ -1092,11 +1140,9 @@ def ptz_route(cam_id):
             elif direction == "right": vx = +s
             elif direction == "up":    vy = +s
             elif direction == "down":  vy = -s
-            elif direction == "zoomin":  vz = +s
-            elif direction == "zoomout": vz = -s
             req = ptz_svc.create_type("ContinuousMove")
             req.ProfileToken = token
-            req.Velocity = {"PanTilt": {"x": vx, "y": vy}, "Zoom": {"x": vz}}
+            req.Velocity = {"PanTilt": {"x": vx, "y": vy}, "Zoom": {"x": 0.0}}
             ptz_svc.ContinuousMove(req)
         return jsonify({"cam_id": cam_id, "dir": direction, "ok": True, "msg": "ok"})
     except Exception as e:
