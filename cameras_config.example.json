@@ -28,7 +28,21 @@
       "mqtt_enabled": true,
       "monitor_only": false,
       "tracking": false,
-      "snapshot_dir": "detections/frontyard"
+      "snapshot_dir": "detections/frontyard",
+      "dedup": {
+        "enabled": false,
+        "classes": ["car", "truck", "bus", "motorcycle"],
+        "match_iou": 0.3,
+        "move_iou": 0.5,
+        "move_center_frac": 0.25,
+        "move_confirm_frames": 3,
+        "move_min_interval_sec": 30,
+        "new_confirm_frames": 3,
+        "absent_sec": 45,
+        "max_interval_sec": 1800,
+        "backstop_cooldown_sec": 5,
+        "max_objects": 64
+      }
     },
     "backyard": {
       "name": "Back Yard PTZ",
