@@ -8,11 +8,11 @@ A missing `dedup` block, or `enabled` set to anything other than the boolean `tr
 
 ## Cooldown
 
-On this branch, `COOLDOWN_SEC` is the constant `3`. `cooldown_ok(label)` uses that constant when no override is passed. Dedup does not read a `cooldown_sec` config key.
+Normal detections call `cooldown_ok(label)`. That uses `get_cooldown_sec()`, which reads the top-level `cooldown_sec` key and defaults to 60 seconds. This is the live Jetson cooldown from `diag/motion-tracker-instrumentation` at `4959985`.
 
-Dedup-managed saves call `cooldown_ok(label, backstop_cooldown_sec)`. The default `backstop_cooldown_sec` is `5`, which is **longer** than main's 3 s global cooldown. With dedup enabled on this tree, the per-label gate for those classes is 5 s.
+Dedup-managed saves call `cooldown_ok(label, backstop_cooldown_sec)`. The default backstop is 5 seconds, so a car passing just after a parked-car save is still captured. A 60 second gate on that path would drop it.
 
-The live Jetson global cooldown is 60 s. That value is an uncommitted change on `diag/motion-tracker-instrumentation` at `7a0b182`, along with `VISION_MOTION_DIAG` instrumentation. This branch does not include either change. On that tree the 5 s backstop is what still captures a car passing just after a parked-car save; a 60 s gate would drop it. A deploy has to reconcile with that working copy. Do not copy this main-based `vision_service.py` over the Jetson file without merging those uncommitted changes.
+`VISION_MOTION_DIAG` logging from that same live commit is included and stays off unless the environment variable is set. It does not change motion decisions.
 
 ## Enable
 
@@ -41,7 +41,7 @@ A save happens for a **new** sighting (3 hits, no gap over 2 s), a **moved** box
 
 Deploy `vision_service.py` and `snapshot_dedup.py` together. The service imports `snapshot_dedup` at startup, so one file without the other will fail to start.
 
-1. On the Jetson, reconcile this branch with the live tree (`diag/motion-tracker-instrumentation` @ `7a0b182` plus its uncommitted cooldown and `VISION_MOTION_DIAG` changes) before copying files into `~/robotics/jetson-vision`.
+1. This branch already contains the Phase 4 snapshot and status routes, parked-car dedup, and the live 60-second cooldown plus `VISION_MOTION_DIAG` instrumentation.
 2. Keep a copy of the current `vision_service.py` and `cameras_config.json`.
 3. Install both `vision_service.py` and `snapshot_dedup.py`.
 4. Check them: `python -m py_compile vision_service.py snapshot_dedup.py`

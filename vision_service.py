@@ -22,6 +22,7 @@ Streams:
 import cv2
 import json
 import logging
+import logging.handlers
 import os
 import threading
 import time
@@ -93,6 +94,67 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────
+# MOTION DIAGNOSTIC INSTRUMENTATION  (TEMPORARY)
+#
+# Purpose : capture per-frame VehicleTracker.is_moving() internals so the
+#           parked-vehicle false-capture hypothesis can be tested against
+#           real data instead of assumed.
+# Scope   : logging only — does NOT alter any detection/motion decision.
+# Default : OFF. Set VISION_MOTION_DIAG=1 in the environment to enable.
+# Removal : unset VISION_MOTION_DIAG (or leave it unset — default is off),
+#           or delete this block plus the _log_motion_diag(...) calls
+#           inside VehicleTracker.is_moving().
+# ─────────────────────────────────────────────
+
+MOTION_DIAG_ENABLED = os.environ.get("VISION_MOTION_DIAG", "0") == "1"
+
+_motion_diag_log = logging.getLogger("motion_diagnostic")
+_motion_diag_log.setLevel(logging.INFO)
+_motion_diag_log.propagate = False  # keep out of vision_service.log / console
+
+if MOTION_DIAG_ENABLED and not _motion_diag_log.handlers:
+    _diag_dir = os.path.expanduser("~/robotics/jetson-vision/logs")
+    os.makedirs(_diag_dir, exist_ok=True)
+    _diag_handler = logging.handlers.RotatingFileHandler(
+        os.path.join(_diag_dir, "motion_diagnostic.log"),
+        maxBytes=1 * 1024 * 1024,   # 1 MB per file — safely under the 2 MB MCP read cap
+        backupCount=5,              # keep 5 rotated files (~5 MB max total)
+    )
+    _diag_handler.setFormatter(logging.Formatter("%(message)s"))
+    _motion_diag_log.addHandler(_diag_handler)
+
+
+def _log_motion_diag(track_id, label, box, prev_center, cur_center,
+                      dx, dy, iou, match_method, motion_count_before,
+                      motion_count_after, moving: bool):
+    """Write one structured diagnostic line. No effect on detection logic."""
+    if not MOTION_DIAG_ENABLED:
+        return
+    x1, y1, x2, y2 = box
+    try:
+        _motion_diag_log.info(json.dumps({
+            "timestamp":           datetime.now().isoformat(timespec="milliseconds"),
+            "track_id":            track_id,
+            "class":               label,
+            "box":                 [x1, y1, x2, y2],
+            "box_w":               x2 - x1,
+            "box_h":               y2 - y1,
+            "prev_center":         prev_center,   # null for a brand-new track
+            "cur_center":          cur_center,
+            "dx":                  dx,            # null for a brand-new track
+            "dy":                  dy,
+            "iou":                 round(iou, 4) if iou is not None else None,
+            "match_method":        match_method,  # "new" | "iou" | "center"
+            "motion_count_before": motion_count_before,
+            "motion_count_after":  motion_count_after,
+            "moving":              moving,
+        }))
+    except Exception as e:
+        # Diagnostic logging must never break detection — swallow and move on.
+        log.debug("motion diagnostic logging failed: %s", e)
+
+
+# ─────────────────────────────────────────────
 # EVENTS LOG
 # ─────────────────────────────────────────────
 
@@ -119,7 +181,23 @@ def log_event(cam_id: str, label: str, confidence: float, image_path: str = None
 
 MQTT_BROKER  = "192.168.1.18"
 MQTT_PORT    = 1883
-COOLDOWN_SEC = 3
+# Snapshot/MQTT re-trigger wait (seconds) for the same detection label.
+# Prefer cameras_config.json top-level "cooldown_sec" (hot-reloaded).
+# Default 60 if missing/invalid — do not hardcode the live value as a constant alone.
+DEFAULT_COOLDOWN_SEC = 60
+
+
+def get_cooldown_sec() -> float:
+    """Return live cooldown seconds from cameras_config cooldown_sec."""
+    with _config_lock:
+        raw = _config.get("cooldown_sec", DEFAULT_COOLDOWN_SEC)
+    try:
+        val = float(raw)
+        if val < 0:
+            return float(DEFAULT_COOLDOWN_SEC)
+        return val
+    except (TypeError, ValueError):
+        return float(DEFAULT_COOLDOWN_SEC)
 
 TOPIC_MAP = {
     "frontyard": {
@@ -254,6 +332,7 @@ class VehicleTracker:
                 best_iou = score
                 best_id  = tid
 
+        matched_via_center = False
         if best_id is None or best_iou < 0.25:
             for tid, t in self._tracks.items():
                 if t["label"] != label:
@@ -261,7 +340,19 @@ class VehicleTracker:
                 pcx, pcy = t["center"]
                 if abs(cx - pcx) < 40 and abs(cy - pcy) < 40:
                     best_id = tid
+                    matched_via_center = True
                     break
+
+        # Diagnostic-only: classify how (if at all) this box was matched,
+        # and recompute IoU against the box actually selected above — the
+        # loop's best_iou may belong to a different candidate than the
+        # track ultimately chosen via the center-proximity fallback.
+        if best_id is None:
+            match_method = "new"
+            final_iou    = None
+        else:
+            match_method = "center" if matched_via_center else "iou"
+            final_iou    = _iou(box, self._tracks[best_id]["box"])
 
         if best_id is None:
             self._counter += 1
@@ -272,12 +363,21 @@ class VehicleTracker:
                 "motion_count": 0,
                 "missed":       0,
             }
+            _log_motion_diag(
+                track_id=self._counter, label=label, box=box,
+                prev_center=None, cur_center=[cx, cy],
+                dx=None, dy=None, iou=final_iou, match_method=match_method,
+                motion_count_before=None, motion_count_after=0,
+                moving=False,
+            )
             return False
 
         t = self._tracks[best_id]
         prev_cx, prev_cy = t["center"]
         dx = abs(cx - prev_cx)
         dy = abs(cy - prev_cy)
+        motion_count_before = t["motion_count"]  # diagnostic only — read, not mutated here
+        crossing = dx >= MOTION_THRESHOLD or dy >= MOTION_THRESHOLD  # diagnostic-only mirror of the check below
 
         if dx >= MOTION_THRESHOLD or dy >= MOTION_THRESHOLD:
             t["motion_count"] += 1
@@ -296,7 +396,31 @@ class VehicleTracker:
             if tid != best_id:
                 tr["missed"] += 1
 
-        return t["motion_count"] >= MOTION_FRAMES_REQUIRED
+        moving = t["motion_count"] >= MOTION_FRAMES_REQUIRED
+
+        # Volume control (diagnostic only): always log threshold-crossing or
+        # moving frames; throttle stationary frames to at most one sample
+        # per track per second. The throttle timestamp is stored under a
+        # key ("_diag_last_stationary_ts") that no decision-logic code path
+        # reads, so it cannot affect motion_count, missed, box, or center.
+        log_this_frame = crossing or moving
+        if not log_this_frame:
+            now_ts  = time.time()
+            last_ts = t.get("_diag_last_stationary_ts", 0.0)
+            if now_ts - last_ts >= 1.0:
+                log_this_frame = True
+                t["_diag_last_stationary_ts"] = now_ts
+
+        if log_this_frame:
+            _log_motion_diag(
+                track_id=best_id, label=label, box=box,
+                prev_center=[prev_cx, prev_cy], cur_center=[cx, cy],
+                dx=dx, dy=dy, iou=final_iou, match_method=match_method,
+                motion_count_before=motion_count_before,
+                motion_count_after=t["motion_count"],
+                moving=moving,
+            )
+        return moving
 
 
 # ─────────────────────────────────────────────
@@ -407,7 +531,7 @@ class CameraProcessor:
 
     def cooldown_ok(self, label: str, cooldown_sec: Optional[float] = None) -> bool:
         now = time.time()
-        limit = COOLDOWN_SEC if cooldown_sec is None else cooldown_sec
+        limit = get_cooldown_sec() if cooldown_sec is None else cooldown_sec
         if now - self.last_trigger.get(label, 0) >= limit:
             self.last_trigger[label] = now
             return True

@@ -175,13 +175,27 @@ assert "from snapshot_dedup import" in _patch_src
 assert os.path.abspath(ORIG.__file__) != os.path.abspath(PATCH.__file__)
 
 
-def test_disabled_by_default_is_identical_to_original():
+def test_disabled_by_default_uses_the_live_60s_cooldown():
+    """Dedup stays off unless enabled. The normal path uses cooldown_sec 60, not main's old 3s constant."""
     for scen in (parked_with_jitter_bursts, with_passing_car):
-        a = run_scenario(ORIG, {}, scen, 3600)
-        b = run_scenario(PATCH, {}, scen, 3600)                      # no dedup block
-        c = run_scenario(PATCH, {"dedup": {"classes": ["car"]}}, scen, 3600)   # block w/o enabled
-        assert a == b == c
-        assert len(a) > 30                                            # the bug: ~1 save/min
+        main_saves = run_scenario(ORIG, {}, scen, 3600)
+        live = run_scenario(PATCH, {}, scen, 3600)
+        disabled = run_scenario(PATCH, {"dedup": {"classes": ["car"]}}, scen, 3600)
+        assert live == disabled
+        assert len(main_saves) > len(live) > 0
+        gaps = [b[0] - a[0] for a, b in zip(live, live[1:])]
+        assert gaps and min(gaps) >= 60
+
+
+def test_explicit_backstop_overrides_the_60s_cooldown():
+    clock = Clock()
+    PATCH.time = clock
+    PATCH._config = {"cooldown_sec": 60, "cameras": {}}
+    proc = PATCH.CameraProcessor("frontyard")
+    assert proc.cooldown_ok("person") is True
+    clock.t += 10
+    assert proc.cooldown_ok("person") is False
+    assert proc.cooldown_ok("car", 5) is True
 
 
 def test_enabled_parked_car_saved_once_then_every_30_min():
