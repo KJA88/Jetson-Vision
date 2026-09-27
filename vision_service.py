@@ -646,6 +646,21 @@ def status_route(cam_id):
                     "mode": "ACTIVE"})
 
 
+@flask_app.route("/snapshot/<cam_id>")
+def snapshot_route(cam_id):
+    """Return the current annotated frame. This does not run inference."""
+    proc = _processors.get(cam_id)
+    if proc is None:
+        return Response("Unknown camera: %s" % cam_id, status=404)
+    frame = proc.get_frame()
+    if frame is None:
+        return Response("No frame", status=503)
+    ok, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    if not ok:
+        return Response("Encode failed", status=503)
+    return Response(buf.tobytes(), mimetype="image/jpeg")
+
+
 @flask_app.route("/health")
 def health():
     return jsonify({cam: _processors[cam].get_frame() is not None
