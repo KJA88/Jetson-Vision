@@ -34,6 +34,8 @@ from onvif import ONVIFCamera
 from ultralytics import YOLO
 import paho.mqtt.client as mqtt
 
+from snapshot_dedup import SnapshotDeduper, parse_dedup_cfg
+
 # ─────────────────────────────────────────────
 # PATHS
 # ─────────────────────────────────────────────
@@ -387,6 +389,10 @@ class CameraProcessor:
         self.last_trigger: dict = {}
         self.vtracker     = VehicleTracker() if cam_id == "frontyard" else None
         self.ptz: Optional[PTZController] = None
+        # Parked-vehicle snapshot dedup (fixed cameras only, OFF by default).
+        self.deduper      = SnapshotDeduper()
+        self.dedup_cfg    = parse_dedup_cfg(None)
+        self._dedup_raw   = None
 
     def set_ptz(self, ptz: PTZController):
         self.ptz = ptz
@@ -399,12 +405,32 @@ class CameraProcessor:
         with self._out_lock:
             return self._out_frame
 
-    def cooldown_ok(self, label: str) -> bool:
+    def cooldown_ok(self, label: str, cooldown_sec: Optional[float] = None) -> bool:
         now = time.time()
-        if now - self.last_trigger.get(label, 0) >= COOLDOWN_SEC:
+        limit = COOLDOWN_SEC if cooldown_sec is None else cooldown_sec
+        if now - self.last_trigger.get(label, 0) >= limit:
             self.last_trigger[label] = now
             return True
         return False
+
+    def refresh_dedup(self, raw):
+        """Hot-reload cameras.<cam>.dedup (missing block = disabled)."""
+        if raw == self._dedup_raw:
+            return
+        self._dedup_raw = json.loads(json.dumps(raw)) if raw is not None else None
+        cfg = parse_dedup_cfg(raw)
+        if not cfg["enabled"]:
+            self.deduper.reset()
+        self.deduper.configure(cfg)
+        self.dedup_cfg = cfg
+        log.info("[%s] dedup %s  classes=%s absent=%ss max_interval=%ss backstop=%ss",
+                 self.cam_id, "ENABLED" if cfg["enabled"] else "disabled",
+                 sorted(cfg["classes"]), cfg["absent_sec"],
+                 cfg["max_interval_sec"], cfg["backstop_cooldown_sec"])
+
+    def dedup_active(self) -> bool:
+        # PTZ cameras are never deduped: their view moves, boxes aren't comparable.
+        return self.ptz is None and self.dedup_cfg["enabled"]
 
 
 # ─────────────────────────────────────────────
@@ -478,6 +504,13 @@ def process_frame(proc: CameraProcessor, frame, model, now: float):
     mon    = cam_cfg(cam_id, "monitor_only") or False
     track  = cam_cfg(cam_id, "tracking")     if cam_cfg(cam_id, "tracking")     is not None else True
 
+    # Parked-vehicle dedup: hot-reloaded, OFF unless cameras.<cam>.dedup.enabled
+    proc.refresh_dedup(cam_cfg(cam_id, "dedup"))
+    dedup_on  = proc.dedup_active()
+    dedup_ids = {}
+    if dedup_on:
+        proc.deduper.prune(now)
+
     # YOLO inference (shared GPU model)
     results   = model(frame, conf=yolo_floor, verbose=False)
     annotated = frame.copy()
@@ -493,6 +526,12 @@ def process_frame(proc: CameraProcessor, frame, model, now: float):
             conf = float(box.conf[0])
             if conf < watch_conf[label]:
                 continue
+
+            # Dedup must see every vehicle box (parked ones too), so observe
+            # BEFORE the is_moving() filter below.
+            if dedup_on and proc.deduper.handles(label):
+                dedup_ids[(label, x1, y1, x2, y2)] = proc.deduper.observe(
+                    label, (x1, y1, x2, y2), now)
 
             # Frontyard: skip parked vehicles
             if proc.vtracker is not None and label in VEHICLE_CLASSES:
@@ -594,7 +633,25 @@ def process_frame(proc: CameraProcessor, frame, model, now: float):
                         (x1, max(y1 - 8, 16)),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 80), 2)
 
-            if not mon and proc.cooldown_ok(label):
+            if mon:
+                continue
+
+            oid = dedup_ids.get((label, x1, y1, x2, y2))
+            if oid is None:
+                # Not a dedup-managed box: original behaviour.
+                if proc.cooldown_ok(label):
+                    _trigger_action(cam_id, label, conf, annotated, snap, mqtt_e)
+                continue
+
+            reason = proc.deduper.should_save(oid, now)
+            if reason is None:
+                log.debug("[%s] DEDUP suppress %s obj=%d", cam_id, label, oid)
+                continue
+            # cooldown_ok stays as a backstop (shorter for dedup classes so a
+            # car passing right after a parked-car save is still captured).
+            if proc.cooldown_ok(label, proc.dedup_cfg["backstop_cooldown_sec"]):
+                proc.deduper.mark_saved(oid, now, reason)
+                log.info("[%s] DEDUP save %s obj=%d reason=%s", cam_id, label, oid, reason)
                 _trigger_action(cam_id, label, conf, annotated, snap, mqtt_e)
 
     # Timestamp
