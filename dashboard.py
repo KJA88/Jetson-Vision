@@ -87,14 +87,21 @@ def api_update_config(cam_id):
 @app.route("/api/cameras/status")
 def api_cameras_status():
     statuses = {}
-    for cam_id in ["frontyard", "backyard", "indoor"]:
-        url = f"http://127.0.0.1:8081/status/{cam_id}"
+    try:
+        cameras = load_config()["cameras"]
+    except Exception:
+        return jsonify(statuses)
+    if not isinstance(cameras, dict):
+        return jsonify(statuses)
+    for cam_id in cameras:
+        url = "http://127.0.0.1:8081/status/%s" % cam_id
         try:
-            r = requests.get(url, timeout=1.5)
-            s = r.json()
+            payload = requests.get(url, timeout=1.5).json()
+            if not isinstance(payload, dict):
+                raise ValueError("status")
             statuses[cam_id] = {
-                "online": bool(s.get("online", False)),
-                "mode": s.get("mode", "online")
+                "online": bool(payload.get("online", False)),
+                "mode": payload.get("mode", "online"),
             }
         except Exception:
             statuses[cam_id] = {"online": False, "mode": "offline"}
