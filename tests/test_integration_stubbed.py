@@ -4,9 +4,10 @@ unpatched main baseline, with cv2/flask/onvif/ultralytics/paho replaced by
 in-memory stubs (nothing touches a camera, network, GPU, or the Jetson).
 Simulated clock.
 
-The baseline is origin/main:vision_service.py, written to a temp dir so a
-disabled dedup block can be compared with main. HOME is a temp dir so import
-side effects (logs, events) stay off real paths.
+The baseline is the unpatched vision service from 247460d (main before
+parked-car dedup). Current main already contains that dedup, so origin/main
+is no longer the unpatched file. HOME is a temp dir so import side effects
+(logs, events) stay off real paths.
 """
 import importlib.util
 import os
@@ -87,7 +88,7 @@ def _baseline_vision_service():
     dest_dir = tempfile.mkdtemp(prefix="dedup_baseline_")
     dest = os.path.join(dest_dir, "vision_service.py")
     data = subprocess.check_output(
-        ["git", "show", "origin/main:vision_service.py"],
+        ["git", "show", "247460d732df01da9e62bfc002383986d69a9ba1:vision_service.py"],
         cwd=ROOT,
     )
     with open(dest, "wb") as f:
@@ -173,6 +174,7 @@ _patch_src = open(PATCH.__file__, encoding="utf-8").read()
 assert "from snapshot_dedup import" not in _orig_src
 assert "from snapshot_dedup import" in _patch_src
 assert os.path.abspath(ORIG.__file__) != os.path.abspath(PATCH.__file__)
+REAL_TRIGGER = PATCH._trigger_action
 
 
 def test_disabled_by_default_uses_the_live_60s_cooldown():
@@ -221,6 +223,33 @@ def test_ptz_camera_never_deduped():
     PATCH._config = {"cameras": {"backyard": {"dedup": {"enabled": True}}}}
     proc.refresh_dedup(PATCH.cam_cfg("backyard", "dedup"))
     assert proc.dedup_cfg["enabled"] is True and proc.dedup_active() is False
+
+
+def test_trigger_action_stores_a_safe_relative_snapshot_key():
+    import json
+    from media_store import safe_media_path
+
+    old = '{"camera":"frontyard","class":"car","image":"car_20260101_000000.jpg"}\n'
+    os.makedirs(os.path.dirname(PATCH.EVENTS_FILE), exist_ok=True)
+    with open(PATCH.EVENTS_FILE, "w", encoding="utf-8") as handle:
+        handle.write(old)
+    PATCH._config = {
+        "cameras": {"frontyard": {"snapshot_dir": "detections/frontyard"}},
+    }
+    REAL_TRIGGER("frontyard", "person", 0.81, FakeFrame(), True, False)
+    REAL_TRIGGER("frontyard", "person", 0.42, FakeFrame(), False, False)
+    with open(PATCH.EVENTS_FILE, encoding="utf-8") as handle:
+        lines = [line for line in handle.read().splitlines() if line.strip()]
+    assert lines[0] == old.strip()
+    attached = json.loads(lines[1])
+    missing = json.loads(lines[2])
+    image = attached["image"]
+    assert image.startswith("detections/frontyard/person_")
+    assert image.endswith(".jpg")
+    assert safe_media_path(image) == image
+    assert image != os.path.basename(image)
+    assert "\\" not in image and not image.startswith("/")
+    assert missing["image"] is None
 
 
 def test_hot_reload_toggle_resets_state():

@@ -35,6 +35,7 @@ from onvif import ONVIFCamera
 from ultralytics import YOLO
 import paho.mqtt.client as mqtt
 
+from media_store import EVENT_RETAIN_MAX, event_image_key, trim_event_log
 from snapshot_dedup import SnapshotDeduper, parse_dedup_cfg
 
 # ─────────────────────────────────────────────
@@ -162,17 +163,22 @@ _events_lock = threading.Lock()
 
 
 def log_event(cam_id: str, label: str, confidence: float, image_path: str = None):
+    root = os.path.expanduser("~/robotics/jetson-vision")
     event = {
         "timestamp":  datetime.now().isoformat(timespec="seconds"),
         "camera":     cam_id,
         "class":      label,
         "confidence": round(confidence, 3),
-        "image":      os.path.basename(image_path) if image_path else None,
+        "image":      event_image_key(image_path, root) if image_path else None,
     }
     with _events_lock:
         os.makedirs(os.path.dirname(EVENTS_FILE), exist_ok=True)
         with open(EVENTS_FILE, "a") as f:
             f.write(json.dumps(event) + "\n")
+        try:
+            trim_event_log(EVENTS_FILE, EVENT_RETAIN_MAX)
+        except Exception as e:
+            log.debug("event retention trim failed: %s", e)
 
 
 # ─────────────────────────────────────────────

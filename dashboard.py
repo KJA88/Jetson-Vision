@@ -12,11 +12,19 @@ import json
 import os
 import threading
 import time
-from datetime import datetime
 from pathlib import Path
 
 import requests
 from flask import Flask, Response, jsonify, request, send_file
+
+from media_store import (
+    archive_snapshots,
+    classify_media,
+    clear_unarchived,
+    delete_snapshots,
+    gallery_entries,
+    is_archived_file,
+)
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -25,6 +33,7 @@ from flask import Flask, Response, jsonify, request, send_file
 BASE_DIR    = Path(__file__).parent
 CONFIG_FILE = BASE_DIR / "cameras_config.json"
 DETECT_DIR  = BASE_DIR / "detections"
+ARCHIVE_DIR = BASE_DIR / "archive"
 EVENTS_FILE = DETECT_DIR / "events.jsonl"
 
 FLASK_PORT  = 8080
@@ -153,29 +162,14 @@ def api_gallery():
     cam_id = request.args.get("camera")
 
     cfg = load_config()
-    images = []
-
-    search_dirs = []
-    if cam_id and cam_id in cfg["cameras"]:
-        snap_dir = BASE_DIR / cfg["cameras"][cam_id]["snapshot_dir"]
-        if snap_dir.exists():
-            search_dirs = [snap_dir]
-    else:
-        search_dirs = [DETECT_DIR]
-
-    all_files = []
-    for d in search_dirs:
-        all_files.extend(d.rglob("*.jpg"))
-
-    for path in sorted(all_files, key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
-        rel = path.relative_to(BASE_DIR)
-        images.append({
-            "path": str(rel).replace("\\", "/"),
-            "name": path.name,
-            "camera": path.parent.name,
-            "mtime": path.stat().st_mtime,
-            "ts": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-        })
+    cameras = cfg.get("cameras") if isinstance(cfg, dict) else {}
+    snap_dir = None
+    if cam_id:
+        if not isinstance(cameras, dict) or cam_id not in cameras:
+            return jsonify([])
+        raw = cameras[cam_id].get("snapshot_dir") or ("detections/" + cam_id)
+        snap_dir = BASE_DIR / raw
+    images = gallery_entries(BASE_DIR, cam_id, snap_dir, limit)
     return jsonify(images)
 
 
@@ -187,23 +181,50 @@ def api_gallery_clear():
     if cam_id and cam_id in cfg["cameras"]:
         snap_dir = BASE_DIR / cfg["cameras"][cam_id]["snapshot_dir"]
         for f in snap_dir.glob("*.jpg"):
+            if is_archived_file(ARCHIVE_DIR, f):
+                continue
             f.unlink()
             removed += 1
     else:
         for f in DETECT_DIR.rglob("*.jpg"):
+            if is_archived_file(ARCHIVE_DIR, f):
+                continue
             f.unlink()
             removed += 1
     return jsonify({"ok": True, "removed": removed})
 
 
+@app.route("/api/gallery/archive", methods=["POST"])
+def api_gallery_archive():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False}), 400
+    result = archive_snapshots(BASE_DIR, data.get("paths"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/gallery/delete", methods=["POST"])
+def api_gallery_delete():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"ok": False}), 400
+    result = delete_snapshots(BASE_DIR, data.get("paths"))
+    return jsonify(result), (200 if result.get("ok") else 400)
+
+
+@app.route("/api/gallery/clear-unarchived", methods=["POST"])
+def api_gallery_clear_unarchived():
+    return jsonify(clear_unarchived(BASE_DIR))
+
+
 @app.route("/snapshots/<path:filepath>")
 def serve_snapshot(filepath):
-    safe = (BASE_DIR / filepath).resolve()
-    if not str(safe).startswith(str(BASE_DIR.resolve())):
+    kind, path = classify_media(BASE_DIR, filepath)
+    if kind == "forbidden":
         return "Forbidden", 403
-    if not safe.is_file():
+    if kind != "ok":
         return "Not found", 404
-    return send_file(safe, mimetype="image/jpeg")
+    return send_file(path, mimetype="image/jpeg")
 
 
 # ─────────────────────────────────────────────
