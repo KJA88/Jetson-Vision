@@ -4,9 +4,10 @@ unpatched main baseline, with cv2/flask/onvif/ultralytics/paho replaced by
 in-memory stubs (nothing touches a camera, network, GPU, or the Jetson).
 Simulated clock.
 
-The baseline is origin/main:vision_service.py, written to a temp dir so a
-disabled dedup block can be compared with main. HOME is a temp dir so import
-side effects (logs, events) stay off real paths.
+The baseline is the unpatched vision service from 247460d (main before
+parked-car dedup). Current main already contains that dedup, so origin/main
+is no longer the unpatched file. HOME is a temp dir so import side effects
+(logs, events) stay off real paths.
 """
 import importlib.util
 import os
@@ -87,7 +88,7 @@ def _baseline_vision_service():
     dest_dir = tempfile.mkdtemp(prefix="dedup_baseline_")
     dest = os.path.join(dest_dir, "vision_service.py")
     data = subprocess.check_output(
-        ["git", "show", "origin/main:vision_service.py"],
+        ["git", "show", "247460d732df01da9e62bfc002383986d69a9ba1:vision_service.py"],
         cwd=ROOT,
     )
     with open(dest, "wb") as f:
