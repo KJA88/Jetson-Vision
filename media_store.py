@@ -18,6 +18,17 @@ def safe_token(value):
     )
 
 
+def event_image_key(image_path, root):
+    """Safe relative key for a new event. Missing and unsafe paths stay unset."""
+    if not image_path:
+        return None
+    try:
+        relative = Path(image_path).resolve().relative_to(Path(root).resolve())
+    except (ValueError, OSError):
+        return None
+    return safe_media_path(relative.as_posix())
+
+
 def safe_media_path(value, roots=None):
     """Relative JPEG key under detections/ or archive/ only."""
     if not isinstance(value, str):
